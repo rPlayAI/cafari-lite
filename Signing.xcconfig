@@ -1,0 +1,21 @@
+// Signing lives here so building never dirties the project file.
+//
+// Copy Local.xcconfig.example to Local.xcconfig, put your own values in it,
+// and Xcode picks them up. Local.xcconfig is git-ignored, so `git status`
+// stays clean no matter who builds.
+
+// A bundle id nobody else will be using. Yours must be unique on the App
+// Store's namespace, so change it.
+CAFARI_LITE_BUNDLE_ID = com.example.cafarilite
+
+// Your ten-character Apple Developer team, e.g. ABCDE12345. Empty means Xcode
+// falls back to whatever it can find, which is fine for a phone-only build.
+CAFARI_LITE_TEAM =
+
+// The CarPlay entitlements. Empty by default, which builds a phone-only app.
+// Set it to CarPlay.entitlements once Apple has granted your account both the
+// carplay-video and carplay-audio entitlements -- see README.md.
+CAFARI_LITE_ENTITLEMENTS =
+
+// Your own settings win: this include is optional and comes last.
+#include? "Local.xcconfig"

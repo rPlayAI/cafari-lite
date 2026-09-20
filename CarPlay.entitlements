@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Both are needed. Signing with carplay-video alone builds and installs
+	     fine, and the app simply never appears on the head unit: every
+	     working CarPlay build here carries the audio entitlement next to it.
+	     Apple grants both per developer account, on request. -->
+	<key>com.apple.developer.carplay-audio</key>
+	<true/>
+	<key>com.apple.developer.carplay-video</key>
+	<true/>
+</dict>
+</plist>

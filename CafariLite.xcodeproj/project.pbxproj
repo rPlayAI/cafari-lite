@@ -1,0 +1,228 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileReference section */
+		A2502337468A4BFA9E11C0F3 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		74D2735ECFA544A0BC41256D /* CafariLite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CafariLite.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		57CCA4574B0D49F192869CC5 /* CafariLite */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CafariLite;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		822D7493623E4C2D9B74D504 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		995C79945E504156A2BDC6CB = {
+			isa = PBXGroup;
+			children = (
+				A2502337468A4BFA9E11C0F3 /* Signing.xcconfig */,
+				57CCA4574B0D49F192869CC5 /* CafariLite */,
+				996D6575D3B94B2C83FEA200 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		996D6575D3B94B2C83FEA200 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				74D2735ECFA544A0BC41256D /* CafariLite.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CAF03253D81E4639ADC00B4B /* CafariLite */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 89B4A14ED6164A778E5EB004 /* Build configuration list for PBXNativeTarget "CafariLite" */;
+			buildPhases = (
+				121ACD7090C843AF9A4513F7 /* Sources */,
+				822D7493623E4C2D9B74D504 /* Frameworks */,
+				73B79A3EA8164FBAB7D7DFB1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				57CCA4574B0D49F192869CC5 /* CafariLite */,
+			);
+			name = CafariLite;
+			productName = CafariLite;
+			productReference = 74D2735ECFA544A0BC41256D /* CafariLite.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		6639EA83B60742428776EEA6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					CAF03253D81E4639ADC00B4B = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 404010B3262649D28903EDD5 /* Build configuration list for PBXProject "CafariLite" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 995C79945E504156A2BDC6CB;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 996D6575D3B94B2C83FEA200 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CAF03253D81E4639ADC00B4B /* CafariLite */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		73B79A3EA8164FBAB7D7DFB1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		121ACD7090C843AF9A4513F7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		627F9B6B3C9D4501BB070F4C /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A2502337468A4BFA9E11C0F3 /* Signing.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C1242B74DBCC40AB887605F9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A2502337468A4BFA9E11C0F3 /* Signing.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		ECBB63978976426B9272529F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "$(CAFARI_LITE_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "$(CAFARI_LITE_TEAM)";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CAFARI_LITE_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		F079E6C348744319B8B7A697 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "$(CAFARI_LITE_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "$(CAFARI_LITE_TEAM)";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CAFARI_LITE_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		404010B3262649D28903EDD5 /* Build configuration list for PBXProject "CafariLite" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1242B74DBCC40AB887605F9 /* Debug */,
+				627F9B6B3C9D4501BB070F4C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		89B4A14ED6164A778E5EB004 /* Build configuration list for PBXNativeTarget "CafariLite" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ECBB63978976426B9272529F /* Debug */,
+				F079E6C348744319B8B7A697 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 6639EA83B60742428776EEA6 /* Project object */;
+}
