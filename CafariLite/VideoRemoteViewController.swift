@@ -10,6 +10,31 @@ struct ControllerClip {
   var posterURL: URL?
   var pageURL: URL?
   var duration: Double
+  var assetLocalIdentifier: String? = nil
+
+  init(title: String, posterURL: URL?, pageURL: URL?, duration: Double, assetLocalIdentifier: String? = nil) {
+    self.title = title
+    self.posterURL = posterURL
+    self.pageURL = pageURL
+    self.duration = duration
+    self.assetLocalIdentifier = assetLocalIdentifier
+  }
+
+  init(link: SavedLink) {
+    title = link.title
+    posterURL = nil
+    pageURL = link.url
+    duration = ControllerClip.seconds(from: link.durationLabel)
+    assetLocalIdentifier = nil
+  }
+
+  static func seconds(from label: String?) -> Double {
+    guard let label else { return 0 }
+    let parts = label.split(separator: ":").compactMap { Double($0) }
+    if parts.count == 3 { return parts[0] * 3600 + parts[1] * 60 + parts[2] }
+    if parts.count == 2 { return parts[0] * 60 + parts[1] }
+    return parts.first ?? 0
+  }
 }
 
 enum CarRemoteCommand {
@@ -32,6 +57,8 @@ extension Notification.Name {
   static let cafariLiteCarPlayback = Notification.Name("CafariLiteCarPlayback")
   static let cafariLiteCarRemoteCommand = Notification.Name("CafariLiteCarRemoteCommand")
   static let cafariLiteCarControllerClosed = Notification.Name("CafariLiteCarControllerClosed")
+  static let cafariLiteOpenController = Notification.Name("CafariLiteOpenController")
+  static let cafariLiteMiniPlayer = Notification.Name("CafariLiteMiniPlayer")
 }
 
 enum CarPlaybackKey {
@@ -76,6 +103,14 @@ final class VideoRemoteViewController: UIViewController {
   private var fitIndex = 0
   private let fitNames = ["Fit", "Fill", "Stretch"]
   private var knownDuration: Double = 0
+  private var tracksQueue: Bool
+  private let sendOnAppear: Bool
+  private var phonePlayer: AVPlayer?
+  private var phoneLayer: AVPlayerLayer?
+  private var phoneWeb: WKWebView?
+  private var didStartPhone = false
+  private var advancedForURL: String?
+  private var posterTask: Task<Void, Never>?
 
   private let playerView = UIView()
   private let posterView = UIImageView()
@@ -94,15 +129,42 @@ final class VideoRemoteViewController: UIViewController {
   private let durationBadge = UIView()
   private let durationLabel = UILabel()
 
-  init(clips: [ControllerClip], index: Int, onCar: Bool, dismissKey: String? = nil) {
+  init(
+    clips: [ControllerClip],
+    index: Int,
+    onCar: Bool,
+    dismissKey: String? = nil,
+    tracksQueue: Bool = false,
+    sendOnAppear: Bool = false
+  ) {
     self.clips = clips.isEmpty
       ? [ControllerClip(title: "Video", posterURL: nil, pageURL: nil, duration: 0)]
       : clips
-    self.index = clips.indices.contains(index) ? index : 0
+    self.index = self.clips.indices.contains(index) ? index : 0
     self.carTarget = onCar
     self.playing = onCar
     self.pinnedKey = dismissKey
+    self.tracksQueue = tracksQueue
+    self.sendOnAppear = sendOnAppear
     super.init(nibName: nil, bundle: nil)
+  }
+
+  func replace(clips: [ControllerClip], index: Int, onCar: Bool, tracksQueue: Bool, send: Bool) {
+    self.clips = clips.isEmpty
+      ? [ControllerClip(title: "Video", posterURL: nil, pageURL: nil, duration: 0)]
+      : clips
+    self.index = self.clips.indices.contains(index) ? index : 0
+    self.tracksQueue = tracksQueue
+    carTarget = onCar
+    playing = onCar
+    stopPhonePicture()
+    showCurrentClip()
+    applyTargetStyles()
+    if send || onCar {
+      sendCurrentToCar()
+    } else {
+      playOnPhone()
+    }
   }
 
   required init?(coder: NSCoder) { fatalError("not used") }
@@ -118,9 +180,38 @@ final class VideoRemoteViewController: UIViewController {
     NotificationCenter.default.addObserver(
       self, selector: #selector(carPlaybackUpdated(_:)),
       name: .cafariLiteCarPlayback, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(phoneItemEnded),
+      name: .AVPlayerItemDidPlayToEndTime, object: nil)
   }
 
-  @objc private func collapse() {
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    guard !didStartPhone else { return }
+    didStartPhone = true
+    if carTarget {
+      if sendOnAppear { sendCurrentToCar() }
+    } else {
+      playOnPhone()
+    }
+  }
+
+  private func collapse() {
+    Log.write("remote collapse car=\(carTarget) key=\(controllerKey())")
+    if Settings.miniPlayer {
+      NotificationCenter.default.post(
+        name: .cafariLiteMiniPlayer,
+        object: nil,
+        userInfo: [
+          "title": nameLabel.text ?? "Video",
+          "clips": clips,
+          "index": index,
+          "onCar": carTarget,
+          "playing": playing,
+          "tracksQueue": tracksQueue,
+        ])
+    }
+    stopPhonePicture()
     NotificationCenter.default.post(
       name: .cafariLiteCarControllerClosed,
       object: nil,
@@ -128,19 +219,30 @@ final class VideoRemoteViewController: UIViewController {
     dismiss(animated: true)
   }
 
-  @objc private func togglePlay() {
+  private func togglePlay() {
     playing.toggle()
     setPlaySymbol()
-    guard carTarget else { return }
-    CarRemoteCommand.post(CarRemoteCommand.toggle)
+    Log.write("remote toggle playing=\(playing) car=\(carTarget)")
+    if carTarget {
+      CarRemoteCommand.post(CarRemoteCommand.toggle)
+      return
+    }
+    if let player = phonePlayer {
+      playing ? player.play() : player.pause()
+      return
+    }
+    Task { [weak phoneWeb] in
+      _ = try? await phoneWeb?.evaluateJavaScript(
+        "(function(){var v=document.querySelector('video');if(!v)return;if(v.paused){v.play()}else{v.pause()}})()")
+    }
   }
 
-  @objc private func rewind10() { seek(by: -10) }
-  @objc private func forward10() { seek(by: 10) }
+  private func rewind10() { seek(by: -10) }
+  private func forward10() { seek(by: 10) }
 
   @objc private func sliderMoved() {
     let fraction = Double(slider.value)
-    positionLabel.text = String(format: "%.2f", fraction)
+    positionLabel.text = formatDecimal(fraction)
     guard knownDuration > 0 else { return }
     currentTimeLabel.text = clock(fraction * knownDuration)
     remainingTimeLabel.text = clock(max(0, knownDuration - fraction * knownDuration))
@@ -148,39 +250,51 @@ final class VideoRemoteViewController: UIViewController {
   }
 
   @objc private func sliderEnded() {
+    Log.write("remote seek fraction=\(slider.value) car=\(carTarget)")
     guard carTarget else { return }
     CarRemoteCommand.post(CarRemoteCommand.seekFraction, ["fraction": Double(slider.value)])
   }
 
-  @objc private func choosePhone() {
-    guard carTarget else { return }
+  private func choosePhone() {
+    guard carTarget else {
+      Log.write("remote target phone already")
+      return
+    }
     carTarget = false
-    playing = false
+    playing = true
     applyTargetStyles()
     setPlaySymbol()
+    Log.write("remote target phone")
     CarRemoteCommand.post(CarRemoteCommand.stop)
+    playOnPhone()
   }
 
-  @objc private func chooseCar() {
-    guard !carTarget else { return }
+  private func chooseCar() {
+    guard !carTarget else {
+      Log.write("remote target car already")
+      return
+    }
+    stopPhonePicture()
     carTarget = true
     playing = true
     applyTargetStyles()
     setPlaySymbol()
+    Log.write("remote target car")
     sendCurrentToCar()
   }
 
-  @objc private func previousItem() { step(-1) }
-  @objc private func nextItem() { step(1) }
+  private func previousItem() { step(-1) }
+  private func nextItem() { step(1) }
 
-  @objc private func cycleFit() {
+  private func cycleFit() {
     fitIndex = (fitIndex + 1) % fitNames.count
     applyFitLabel()
+    Log.write("remote fit \(fitNames[fitIndex]) car=\(carTarget)")
     guard carTarget else { return }
     CarRemoteCommand.post(CarRemoteCommand.fit, ["fit": fitNames[fitIndex]])
   }
 
-  @objc private func showVolume() {
+  private func showVolume() {
     let alert = UIAlertController(title: "Volume", message: "\n\n", preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "Done", style: .cancel))
     present(alert, animated: true) {
@@ -189,6 +303,7 @@ final class VideoRemoteViewController: UIViewController {
       slider.maximumValue = 1
       slider.value = AVAudioSession.sharedInstance().outputVolume
       slider.addTarget(self, action: #selector(self.volumeChanged(_:)), for: .valueChanged)
+      slider.addTarget(self, action: #selector(self.volumeEnded(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
       alert.view.addSubview(slider)
     }
   }
@@ -198,10 +313,16 @@ final class VideoRemoteViewController: UIViewController {
     CarRemoteCommand.post(CarRemoteCommand.volume, ["volume": Double(sender.value)])
   }
 
-  @objc private func toggleDim() {
+  @objc private func volumeEnded(_ sender: UISlider) {
+    let volume = formatDecimal(Double(sender.value))
+    Log.write("remote volume \(volume) car=\(carTarget)")
+  }
+
+  private func toggleDim() {
     dimmed.toggle()
     dimView.alpha = dimmed ? 0.55 : 0
     applyDimButton()
+    Log.write("remote dim \(dimmed) car=\(carTarget)")
     guard carTarget else { return }
     CarRemoteCommand.post(CarRemoteCommand.dim, ["on": dimmed])
   }
@@ -209,12 +330,22 @@ final class VideoRemoteViewController: UIViewController {
   @objc private func carPlaybackUpdated(_ note: Notification) {
     guard carTarget else { return }
     let info = note.userInfo ?? [:]
+    let ended = (info["ended"] as? NSNumber)?.boolValue ?? (info["ended"] as? Bool ?? false)
+    if ended, Settings.autoplayNextVideo {
+      let key = clips[index].pageURL?.absoluteString ?? "index:\(index)"
+      if advancedForURL != key {
+        advancedForURL = key
+        step(1)
+      }
+      return
+    }
     playing = (info["playing"] as? NSNumber)?.boolValue ?? (info["playing"] as? Bool ?? playing)
     if let title = info["title"] as? String {
       let cleaned = cleanedTitle(title)
-      if cleaned != "Video" { nameLabel.text = cleaned }
+      let looksLikeFile = cleaned.contains(".mp4") || cleaned.contains(".html") || cleaned.contains("playback")
+      if cleaned != "Video", !looksLikeFile { nameLabel.text = cleaned }
     }
-    if let url = info["pageURL"] as? URL {
+    if let url = info["pageURL"] as? URL, clips[index].pageURL == nil, !url.isFileURL {
       clips[index].pageURL = url
       updateSourceBadge()
       if posterView.image == nil { loadPoster() }
@@ -227,10 +358,15 @@ final class VideoRemoteViewController: UIViewController {
 
   private func step(_ delta: Int) {
     let next = index + delta
-    guard clips.indices.contains(next) else { return }
+    guard clips.indices.contains(next) else {
+      Log.write("remote step \(delta) blocked index=\(index)")
+      return
+    }
     index = next
+    if tracksQueue { PhonePlayback.shared.noteIndex(index) }
+    Log.write("remote step \(delta) index=\(index) \(clips[index].title)")
     showCurrentClip()
-    if carTarget { sendCurrentToCar() }
+    if carTarget { sendCurrentToCar() } else { playOnPhone() }
   }
 
   private func showCurrentClip() {
@@ -245,12 +381,107 @@ final class VideoRemoteViewController: UIViewController {
   }
 
   private func sendCurrentToCar() {
-    guard let url = clips[index].pageURL else { return }
-    let destination = BrowserViewController.playerURL(for: url) ?? url
-    NotificationCenter.default.post(name: .cafariLiteSendToCar, object: nil, userInfo: ["url": destination])
+    Task { @MainActor [weak self] in
+      guard let self, let url = await self.resolveCurrentURL() else {
+        Log.write("remote send no url index=\(self?.index ?? -1)")
+        return
+      }
+      let destination = BrowserViewController.playerURL(for: url) ?? url
+      let title = self.clips[self.index].title
+      Log.write("remote send \(url.absoluteString) -> \(destination.absoluteString)")
+      NotificationCenter.default.post(
+        name: .cafariLiteSendToCar,
+        object: nil,
+        userInfo: ["url": destination, "title": title])
+      PhonePlayback.shared.remember(title: title, url: url)
+    }
+  }
+
+  @objc private func phoneItemEnded(_ note: Notification) {
+    guard !carTarget, Settings.autoplayNextVideo else { return }
+    guard let item = note.object as? AVPlayerItem, item == phonePlayer?.currentItem else { return }
+    step(1)
+  }
+
+  override func viewDidLayoutSubviews() {
+    super.viewDidLayoutSubviews()
+    phoneLayer?.frame = playerView.bounds
+  }
+
+  private func playOnPhone() {
+    Task { @MainActor [weak self] in
+      guard let self, !self.carTarget, let url = await self.resolveCurrentURL() else { return }
+      self.stopPhonePicture()
+      self.playing = true
+      self.setPlaySymbol()
+      if self.playsInPlayer(url) {
+        let player = AVPlayer(url: url)
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = .resizeAspect
+        layer.frame = self.playerView.bounds
+        self.playerView.layer.insertSublayer(layer, above: self.posterView.layer)
+        self.phonePlayer = player
+        self.phoneLayer = layer
+        player.play()
+        return
+      }
+      let configuration = WKWebViewConfiguration()
+      configuration.allowsInlineMediaPlayback = true
+      configuration.mediaTypesRequiringUserActionForPlayback = []
+      let web = WKWebView(frame: .zero, configuration: configuration)
+      web.translatesAutoresizingMaskIntoConstraints = false
+      web.isOpaque = false
+      web.backgroundColor = .black
+      self.playerView.insertSubview(web, aboveSubview: self.posterView)
+      NSLayoutConstraint.activate([
+        web.topAnchor.constraint(equalTo: self.playerView.topAnchor),
+        web.leadingAnchor.constraint(equalTo: self.playerView.leadingAnchor),
+        web.trailingAnchor.constraint(equalTo: self.playerView.trailingAnchor),
+        web.bottomAnchor.constraint(equalTo: self.playerView.bottomAnchor),
+      ])
+      let destination = BrowserViewController.playerURL(for: url) ?? url
+      web.load(URLRequest(url: destination))
+      self.phoneWeb = web
+    }
+  }
+
+  private func playsInPlayer(_ url: URL) -> Bool {
+    if url.isFileURL { return true }
+    let value = url.absoluteString.lowercased()
+    return value.contains(".m3u8") || value.hasSuffix(".mp4") || value.hasSuffix(".mov")
+  }
+
+  private func stopPhonePicture() {
+    phonePlayer?.pause()
+    phonePlayer = nil
+    phoneLayer?.removeFromSuperlayer()
+    phoneLayer = nil
+    phoneWeb?.removeFromSuperview()
+    phoneWeb = nil
+  }
+
+  private func resolveCurrentURL() async -> URL? {
+    let item = index
+    if let url = clips[item].pageURL {
+      return url
+    }
+    guard let id = clips[item].assetLocalIdentifier else {
+      Log.write("remote no media index=\(item)")
+      return nil
+    }
+    let url = await LibraryVideoExporter.export(localIdentifier: id)
+    guard clips.indices.contains(item) else {
+      return nil
+    }
+    if let url { clips[item].pageURL = url }
+    guard index == item else {
+      return nil
+    }
+    return url
   }
 
   private func seek(by delta: Double) {
+    Log.write("remote seek delta=\(delta) car=\(carTarget)")
     if knownDuration > 0 {
       let next = min(knownDuration, max(0, Double(slider.value) * knownDuration + delta))
       applyTimes(current: next, duration: knownDuration)
@@ -260,22 +491,24 @@ final class VideoRemoteViewController: UIViewController {
   }
 
   private func loadPoster() {
-    let clip = clips[index]
+    posterTask?.cancel()
+    let currentIndex = index
+    let clip = clips[currentIndex]
     posterView.image = nil
-    let url: URL?
-    if let page = clip.pageURL, let id = BrowserViewController.youtubeID(for: page) {
-      url = URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")
+    let url = if let page = clip.pageURL, let id = BrowserViewController.youtubeID(for: page) {
+      URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg")
     } else {
-      url = clip.posterURL
+      clip.posterURL
     }
     guard let url else { return }
-    URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-      guard let data, let image = UIImage(data: data) else { return }
-      DispatchQueue.main.async {
-        guard let self, self.clips.indices.contains(self.index) else { return }
-        self.posterView.image = image
-      }
-    }.resume()
+    posterTask = Task { @MainActor [weak self] in
+      guard let (data, _) = try? await URLSession.shared.data(from: url),
+            !Task.isCancelled,
+            let image = UIImage(data: data),
+            let self,
+            self.index == currentIndex else { return }
+      self.posterView.image = image
+    }
   }
 
   private func applyTimes(current: Double, duration: Double) {
@@ -295,11 +528,20 @@ final class VideoRemoteViewController: UIViewController {
     let shownCurrent = slider.isTracking && safeDuration > 0 ? fraction * safeDuration : safeCurrent
     currentTimeLabel.text = clock(shownCurrent)
     remainingTimeLabel.text = safeDuration > 0 ? clock(max(0, safeDuration - shownCurrent)) : "0:00"
-    positionLabel.text = String(format: "%.2f", fraction)
+    positionLabel.text = formatDecimal(fraction)
     if safeDuration > 0.5 {
       durationLabel.text = clock(safeDuration)
       durationBadge.isHidden = false
     }
+  }
+
+  private func formatDecimal(_ value: Double) -> String {
+    value.formatted(
+      .number
+        .grouping(.never)
+        .precision(.fractionLength(2))
+        .locale(Locale(identifier: "en_US_POSIX"))
+    )
   }
 
   private func updateSourceBadge() {
@@ -324,20 +566,17 @@ final class VideoRemoteViewController: UIViewController {
   private func clock(_ seconds: Double) -> String {
     guard seconds.isFinite, seconds >= 0 else { return "0:00" }
     let total = Int(seconds.rounded())
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let secs = total % 60
-    if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
-    return String(format: "%d:%02d", minutes, secs)
+    return Duration.seconds(total).formatted(
+      .time(pattern: total >= 3600 ? .hourMinuteSecond : .minuteSecond)
+    )
   }
 
   private func buildInterface() {
-    let close = UIButton(type: .system)
+    let close = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in self?.collapse() })
     let chevron = UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)
     close.setImage(UIImage(systemName: "chevron.down", withConfiguration: chevron), for: .normal)
     close.tintColor = ControllerColor.zinc300
     close.accessibilityLabel = "Collapse"
-    close.addTarget(self, action: #selector(collapse), for: .touchUpInside)
     close.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(close)
 
@@ -371,9 +610,13 @@ final class VideoRemoteViewController: UIViewController {
     configureYouTubeBadge()
     configureDurationBadge()
 
-    let rewind = roundButton(symbol: "gobackward.10", pointSize: 22, diameter: 64, label: "Rewind 10 Seconds", action: #selector(rewind10))
+    let rewind = roundButton(symbol: "gobackward.10", pointSize: 22, diameter: 64, label: "Rewind 10 Seconds") { [weak self] in
+      self?.rewind10()
+    }
     configurePlayButton()
-    let forward = roundButton(symbol: "goforward.10", pointSize: 22, diameter: 64, label: "Forward 10 Seconds", action: #selector(forward10))
+    let forward = roundButton(symbol: "goforward.10", pointSize: 22, diameter: 64, label: "Forward 10 Seconds") { [weak self] in
+      self?.forward10()
+    }
     let transport = UIStackView(arrangedSubviews: [rewind, playButton, forward])
     transport.axis = .horizontal
     transport.alignment = .center
@@ -394,8 +637,8 @@ final class VideoRemoteViewController: UIViewController {
     targetShell.layer.borderWidth = 1
     targetShell.layer.borderColor = UIColor.white.withAlphaComponent(0.10).cgColor
     targetShell.clipsToBounds = true
-    phoneButton.addTarget(self, action: #selector(choosePhone), for: .touchUpInside)
-    carButton.addTarget(self, action: #selector(chooseCar), for: .touchUpInside)
+    phoneButton.addAction(UIAction { [weak self] _ in self?.choosePhone() }, for: .touchUpInside)
+    carButton.addAction(UIAction { [weak self] _ in self?.chooseCar() }, for: .touchUpInside)
     let targets = UIStackView(arrangedSubviews: [phoneButton, carButton])
     targets.axis = .horizontal
     targets.spacing = 4
@@ -404,14 +647,20 @@ final class VideoRemoteViewController: UIViewController {
     targetShell.addSubview(targets)
     applyTargetStyles()
 
-    let previous = toolButton(symbol: "backward.end.fill", title: nil, label: "Previous Track", action: #selector(previousItem))
-    let next = toolButton(symbol: "forward.end.fill", title: nil, label: "Next Track", action: #selector(nextItem))
+    let previous = toolButton(symbol: "backward.end.fill", title: nil, label: "Previous Track") { [weak self] in
+      self?.previousItem()
+    }
+    let next = toolButton(symbol: "forward.end.fill", title: nil, label: "Next Track") { [weak self] in
+      self?.nextItem()
+    }
     fitButton.accessibilityLabel = "Video Fit Mode"
-    fitButton.addTarget(self, action: #selector(cycleFit), for: .touchUpInside)
+    fitButton.addAction(UIAction { [weak self] _ in self?.cycleFit() }, for: .touchUpInside)
     applyFitLabel()
-    let volume = toolButton(symbol: "speaker.wave.2.fill", title: nil, label: "Volume", action: #selector(showVolume))
+    let volume = toolButton(symbol: "speaker.wave.2.fill", title: nil, label: "Volume") { [weak self] in
+      self?.showVolume()
+    }
     dimButton.accessibilityLabel = "Dim Mode"
-    dimButton.addTarget(self, action: #selector(toggleDim), for: .touchUpInside)
+    dimButton.addAction(UIAction { [weak self] _ in self?.toggleDim() }, for: .touchUpInside)
     applyDimButton()
     let tools = UIStackView(arrangedSubviews: [previous, next, fitButton, volume, dimButton])
     tools.axis = .horizontal
@@ -575,7 +824,7 @@ final class VideoRemoteViewController: UIViewController {
     config.background.strokeWidth = 1
     playButton.configuration = config
     playButton.accessibilityLabel = "Play or Pause"
-    playButton.addTarget(self, action: #selector(togglePlay), for: .touchUpInside)
+    playButton.addAction(UIAction { [weak self] _ in self?.togglePlay() }, for: .touchUpInside)
     playButton.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
       playButton.widthAnchor.constraint(equalToConstant: 80),
@@ -628,11 +877,10 @@ final class VideoRemoteViewController: UIViewController {
     dimButton.configuration = toolConfiguration(symbol: "moon.fill", title: nil, selected: dimmed)
   }
 
-  private func toolButton(symbol: String, title: String?, label: String, action: Selector) -> UIButton {
-    let button = UIButton(type: .custom)
+  private func toolButton(symbol: String, title: String?, label: String, handler: @escaping () -> Void) -> UIButton {
+    let button = UIButton(type: .custom, primaryAction: UIAction { _ in handler() })
     button.configuration = toolConfiguration(symbol: symbol, title: title)
     button.accessibilityLabel = label
-    button.addTarget(self, action: action, for: .touchUpInside)
     return button
   }
 
@@ -658,8 +906,8 @@ final class VideoRemoteViewController: UIViewController {
     return config
   }
 
-  private func roundButton(symbol: String, pointSize: CGFloat, diameter: CGFloat, label: String, action: Selector) -> UIButton {
-    let button = UIButton(type: .custom)
+  private func roundButton(symbol: String, pointSize: CGFloat, diameter: CGFloat, label: String, handler: @escaping () -> Void) -> UIButton {
+    let button = UIButton(type: .custom, primaryAction: UIAction { _ in handler() })
     var config = UIButton.Configuration.plain()
     config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .medium))
     config.baseForegroundColor = UIColor(white: 0.93, alpha: 1)
@@ -669,7 +917,6 @@ final class VideoRemoteViewController: UIViewController {
     config.background.strokeWidth = 1
     button.configuration = config
     button.accessibilityLabel = label
-    button.addTarget(self, action: action, for: .touchUpInside)
     button.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
       button.widthAnchor.constraint(equalToConstant: diameter),

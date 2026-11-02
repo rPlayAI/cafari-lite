@@ -1,10 +1,13 @@
 import UIKit
 
 final class CarPlayHomeViewController: UIViewController {
-    private let links: [SavedLink]
+    private var links: [SavedLink] = []
     private var collectionView: UICollectionView!
+    private var sidebar: UIVisualEffectView!
+    private var sidebarWidth: NSLayoutConstraint!
+    private var cellRegistration: UICollectionView.CellRegistration<CarPlayFavoriteCell, SavedLink>!
 
-    init(links: [SavedLink] = SavedLinkStore.shared.links) {
+    init(links: [SavedLink] = []) {
         self.links = links.filter(\.starred)
         super.init(nibName: nil, bundle: nil)
     }
@@ -19,15 +22,50 @@ final class CarPlayHomeViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         buildInterface()
+        reloadStarred()
+        applyWallpaperDock()
+        Log.write("car home starred=\(links.count)")
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(openRequestedLink(_:)),
             name: .cafariLiteSendToCar,
             object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(linksChanged),
+            name: .cafariLiteLinksChanged,
+            object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(settingsChanged),
+            name: .cafariLiteSettingsChanged,
+            object: nil)
+    }
+
+    @objc private func linksChanged() {
+        reloadStarred()
+    }
+
+    @objc private func settingsChanged() {
+        applyWallpaperDock()
+    }
+
+    private func reloadStarred() {
+        links = SavedLinkStore.shared.links.filter(\.starred)
+        collectionView?.reloadData()
+        collectionView?.collectionViewLayout.invalidateLayout()
+    }
+
+    private func applyWallpaperDock() {
+        let show = Settings.wallpaperShortcuts
+        sidebarWidth?.constant = show ? 96 : 0
+        sidebar?.isHidden = !show
+        view.layoutIfNeeded()
+        collectionView?.collectionViewLayout.invalidateLayout()
     }
 
     private func buildInterface() {
-        let sidebar = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+        sidebar = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sidebar)
 
@@ -38,13 +76,15 @@ final class CarPlayHomeViewController: UIViewController {
         sideStack.translatesAutoresizingMaskIntoConstraints = false
         sidebar.contentView.addSubview(sideStack)
 
-        [
+        for (symbol, label) in [
             ("map.fill", "Maps"),
             ("music.note", "Music"),
             ("phone.fill", "Phone"),
             ("rectangle.grid.2x2.fill", "Dashboard")
-        ].forEach { symbol, label in
-            let button = UIButton(type: .system)
+        ] {
+            let button = UIButton(type: .system, primaryAction: UIAction { _ in
+                Log.write("car home sidebar \(label)")
+            })
             button.setImage(UIImage(systemName: symbol), for: .normal)
             button.tintColor = .label
             button.backgroundColor = .secondarySystemBackground
@@ -60,19 +100,23 @@ final class CarPlayHomeViewController: UIViewController {
         layout.minimumLineSpacing = 16
         layout.sectionInset = UIEdgeInsets(top: 32, left: 32, bottom: 32, right: 32)
 
+        cellRegistration = UICollectionView.CellRegistration<CarPlayFavoriteCell, SavedLink> { cell, _, item in
+            cell.configure(with: item)
+        }
+
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(CarPlayFavoriteCell.self, forCellWithReuseIdentifier: CarPlayFavoriteCell.reuseIdentifier)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
 
+        sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: 96)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: view.topAnchor),
             sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 96),
+            sidebarWidth,
 
             sideStack.centerXAnchor.constraint(equalTo: sidebar.contentView.centerXAnchor),
             sideStack.centerYAnchor.constraint(equalTo: sidebar.contentView.centerYAnchor),
@@ -85,11 +129,23 @@ final class CarPlayHomeViewController: UIViewController {
     }
 
     @objc private func openRequestedLink(_ note: Notification) {
-        guard let url = note.userInfo?["url"] as? URL else { return }
-        open(url: url, title: url.host ?? "CarPlay Link")
+        guard let url = note.userInfo?["url"] as? URL else {
+            Log.write("car home send missing url")
+            return
+        }
+        let title = (note.userInfo?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? url.host()
+            ?? "CarPlay Link"
+        open(url: url, title: title)
     }
 
     private func open(url: URL, title: String) {
+        Log.write("car home open \(title) \(url.absoluteString)")
+        if let browser = navigationController?.viewControllers.last as? BrowserViewController {
+            browser.title = title
+            browser.show(url: url)
+            return
+        }
         let browser = BrowserViewController(showsStatus: false, initialURL: url)
         browser.title = title
         navigationController?.pushViewController(browser, animated: false)
@@ -105,11 +161,11 @@ extension CarPlayHomeViewController: UICollectionViewDataSource, UICollectionVie
         _ collectionView: UICollectionView,
         cellForItemAt indexPath: IndexPath
     ) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(
-            withReuseIdentifier: CarPlayFavoriteCell.reuseIdentifier,
-            for: indexPath) as! CarPlayFavoriteCell
-        cell.configure(with: links[indexPath.item])
-        return cell
+        collectionView.dequeueConfiguredReusableCell(
+            using: cellRegistration,
+            for: indexPath,
+            item: links[indexPath.item]
+        )
     }
 
     func collectionView(
@@ -129,8 +185,6 @@ extension CarPlayHomeViewController: UICollectionViewDataSource, UICollectionVie
 }
 
 private final class CarPlayFavoriteCell: UICollectionViewCell {
-    static let reuseIdentifier = "CarPlayFavoriteCell"
-
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
@@ -195,7 +249,7 @@ private final class CarPlayFavoriteCell: UICollectionViewCell {
     }
 
     func configure(with link: SavedLink) {
-        let isYouTube = link.url?.host?.contains("youtube.") == true
+        let isYouTube = link.url?.host()?.contains("youtube.") == true
         let isStream = link.url?.pathExtension.lowercased() == "m3u8"
         iconView.image = UIImage(systemName: isStream ? "film" : isYouTube ? "play.rectangle.fill" : "link")
         titleLabel.text = link.title

@@ -31,17 +31,23 @@ final class PageBrowserController: UIViewController, WKNavigationDelegate {
     bar.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(bar)
 
-    let close = UIButton(type: .system)
+    let close = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in
+      Log.write("page close")
+      self?.dismiss(animated: true)
+    })
     close.setTitle("Close", for: .normal)
-    close.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
-    let back = UIButton(type: .system)
+    let back = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in
+      Log.write("page back")
+      self?.webView.goBack()
+    })
     back.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
     back.accessibilityLabel = "Previous"
-    back.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
-    let forward = UIButton(type: .system)
+    let forward = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in
+      Log.write("page forward")
+      self?.webView.goForward()
+    })
     forward.setImage(UIImage(systemName: "chevron.forward"), for: .normal)
     forward.accessibilityLabel = "Next"
-    forward.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
     let title = UILabel()
     title.text = pageTitle
     title.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -68,17 +74,15 @@ final class PageBrowserController: UIViewController, WKNavigationDelegate {
       webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
     ])
+    Log.write("page open \(pageTitle) \(startURL.absoluteString)")
     webView.load(URLRequest(url: startURL))
   }
-
-  @objc private func closeTapped() { dismiss(animated: true) }
-  @objc private func backTapped() { webView.goBack() }
-  @objc private func forwardTapped() { webView.goForward() }
 }
 
 enum PhonePlaybackPresenter {
   static func make(url: URL, title: String, direct: Bool) -> UIViewController {
     if direct, isMedia(url) {
+      Log.write("phone player \(url.absoluteString)")
       let controller = AVPlayerViewController()
       let player = AVPlayer(url: url)
       controller.player = player

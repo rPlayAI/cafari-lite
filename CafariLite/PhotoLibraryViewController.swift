@@ -12,10 +12,13 @@ final class PhotoLibraryViewController: UIViewController {
     private let permissionMessageLabel = UILabel()
     private let permissionButton = UIButton(type: .system)
     private let moreButton = UIButton(type: .system)
+    private var cellRegistration: UICollectionView.CellRegistration<PhotoAssetCell, PHAsset>!
 
     private var albums: [PhotoAlbum] = []
     private var assets: [PHAsset] = []
     private var selectedAlbumIndex = 0
+    private var columnCount = 3
+    private var pinchStartColumnCount = 3
     private var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
@@ -26,6 +29,7 @@ final class PhotoLibraryViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         PHPhotoLibrary.shared().register(self)
+        imageManager.allowsCachingHighQualityImages = true
         buildInterface()
         updatePermissionState()
     }
@@ -57,7 +61,7 @@ final class PhotoLibraryViewController: UIViewController {
         moreButton.backgroundColor = .secondarySystemBackground
         moreButton.layer.cornerRadius = 16
         moreButton.accessibilityLabel = "More library options"
-        moreButton.addTarget(self, action: #selector(showMoreOptions), for: .touchUpInside)
+        moreButton.addAction(UIAction { [weak self] _ in self?.showMoreOptions() }, for: .touchUpInside)
         moreButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(moreButton)
 
@@ -71,13 +75,25 @@ final class PhotoLibraryViewController: UIViewController {
         tabsStack.translatesAutoresizingMaskIntoConstraints = false
         tabsScrollView.addSubview(tabsStack)
 
+        cellRegistration = UICollectionView.CellRegistration<PhotoAssetCell, PHAsset> { [weak self] cell, _, asset in
+            guard let self else { return }
+            let cellSide = max(cell.bounds.width, 1) * self.traitCollection.displayScale
+            cell.configure(
+                asset: asset,
+                imageManager: self.imageManager,
+                targetSize: CGSize(width: cellSide, height: cellSide))
+        }
+
         collectionView.backgroundColor = .systemBackground
         collectionView.alwaysBounceVertical = true
         collectionView.contentInset = UIEdgeInsets(top: 0, left: 2, bottom: 112, right: 2)
-        collectionView.scrollIndicatorInsets = collectionView.contentInset
+        collectionView.verticalScrollIndicatorInsets = collectionView.contentInset
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(PhotoAssetCell.self, forCellWithReuseIdentifier: PhotoAssetCell.reuseIdentifier)
+        collectionView.setCollectionViewLayout(makeGridLayout(columns: columnCount), animated: false)
+        collectionView.addGestureRecognizer(UIPinchGestureRecognizer(
+            target: self,
+            action: #selector(handlePinch(_:))))
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
 
@@ -114,6 +130,61 @@ final class PhotoLibraryViewController: UIViewController {
         ])
     }
 
+    private func makeGridLayout(columns: Int) -> UICollectionViewLayout {
+        let spacing: CGFloat = 2
+        let fraction = 1 / CGFloat(columns)
+        let itemSize = NSCollectionLayoutSize(
+            widthDimension: .fractionalWidth(fraction),
+            heightDimension: .fractionalWidth(1))
+        let items = (0..<columns).map { _ in
+            let item = NSCollectionLayoutItem(layoutSize: itemSize)
+            item.contentInsets = NSDirectionalEdgeInsets(
+                top: spacing / 2,
+                leading: spacing / 2,
+                bottom: spacing / 2,
+                trailing: spacing / 2)
+            return item
+        }
+
+        let groupSize = NSCollectionLayoutSize(
+            widthDimension: .fractionalWidth(1),
+            heightDimension: .fractionalWidth(fraction))
+        let group = NSCollectionLayoutGroup.horizontal(
+            layoutSize: groupSize,
+            subitems: items)
+
+        let section = NSCollectionLayoutSection(group: group)
+        section.contentInsets = NSDirectionalEdgeInsets(
+            top: 0,
+            leading: 2,
+            bottom: 0,
+            trailing: 2)
+        return UICollectionViewCompositionalLayout(section: section)
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchStartColumnCount = columnCount
+        case .ended, .cancelled:
+            let nextColumnCount = if gesture.scale > 1.12 {
+                max(2, pinchStartColumnCount - 1)
+            } else if gesture.scale < 0.88 {
+                min(5, pinchStartColumnCount + 1)
+            } else {
+                columnCount
+            }
+
+            guard nextColumnCount != columnCount else { return }
+            columnCount = nextColumnCount
+            collectionView.setCollectionViewLayout(
+                makeGridLayout(columns: columnCount),
+                animated: true)
+        default:
+            break
+        }
+    }
+
     private func buildPermissionView() {
         permissionView.backgroundColor = .secondarySystemBackground
         permissionView.layer.cornerRadius = 18
@@ -138,7 +209,7 @@ final class PhotoLibraryViewController: UIViewController {
 
         permissionButton.setTitle("Allow Photo Access", for: .normal)
         permissionButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
-        permissionButton.addTarget(self, action: #selector(permissionButtonTapped), for: .touchUpInside)
+        permissionButton.addAction(UIAction { [weak self] _ in self?.permissionButtonTapped() }, for: .touchUpInside)
 
         [permissionTitleLabel, permissionMessageLabel, permissionButton].forEach { stack.addArrangedSubview($0) }
 
@@ -150,14 +221,25 @@ final class PhotoLibraryViewController: UIViewController {
         ])
     }
 
+    private func photoAccessLabel() -> String {
+        switch authorizationStatus {
+        case .authorized: "authorized"
+        case .limited: "limited"
+        case .denied: "denied"
+        case .restricted: "restricted"
+        case .notDetermined: "notDetermined"
+        @unknown default: "unknown"
+        }
+    }
+
     private func requestAccessIfNeeded() {
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if authorizationStatus == .notDetermined {
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
-                DispatchQueue.main.async {
-                    self?.authorizationStatus = status
-                    self?.updatePermissionState()
-                }
+            Log.write("library photos requesting")
+            Task { @MainActor [weak self] in
+                let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                self?.authorizationStatus = status
+                self?.updatePermissionState()
             }
         } else {
             updatePermissionState()
@@ -165,6 +247,7 @@ final class PhotoLibraryViewController: UIViewController {
     }
 
     private func updatePermissionState() {
+        Log.write("library photos \(photoAccessLabel())")
         let canRead = authorizationStatus == .authorized || authorizationStatus == .limited
         permissionView.isHidden = canRead
 
@@ -188,55 +271,85 @@ final class PhotoLibraryViewController: UIViewController {
     }
 
     private func loadAlbums() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let options = PHFetchOptions()
-            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d", PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
-
-            var fetchedAlbums: [PhotoAlbum] = []
-            let recents = PHAssetCollection.fetchAssetCollections(
-                with: .smartAlbum,
-                subtype: .smartAlbumUserLibrary,
-                options: nil)
-            if let collection = recents.firstObject {
-                fetchedAlbums.append(PhotoAlbum(title: collection.localizedTitle ?? "Recents", collection: collection))
-            }
-
-            let userAlbums = PHAssetCollection.fetchAssetCollections(
-                with: .album,
-                subtype: .any,
-                options: nil)
-            userAlbums.enumerateObjects { collection, _, _ in
-                let count = PHAsset.fetchAssets(in: collection, options: options).count
-                if count > 0 {
-                    fetchedAlbums.append(PhotoAlbum(title: collection.localizedTitle ?? "Album", collection: collection))
+        Task { [weak self] in
+            let (fetchedAlbums, summary) = await Task.detached(priority: .userInitiated) {
+                let options = Self.defaultFetchOptions()
+                var fetchedAlbums: [PhotoAlbum] = []
+                var notes: [String] = []
+                let recents = PHAssetCollection.fetchAssetCollections(
+                    with: .smartAlbum,
+                    subtype: .smartAlbumUserLibrary,
+                    options: nil)
+                if let collection = recents.firstObject {
+                    let title = collection.localizedTitle ?? "Recents"
+                    let count = PHAsset.fetchAssets(in: collection, options: options).count
+                    fetchedAlbums.append(PhotoAlbum(title: title, collection: collection))
+                    notes.append("\(title)=\(count)")
                 }
-            }
 
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.albums = fetchedAlbums
-                self.selectedAlbumIndex = min(self.selectedAlbumIndex, max(0, fetchedAlbums.count - 1))
-                self.reloadSelectedAlbum(with: options)
-                self.buildTabs()
-            }
+                let userAlbums = PHAssetCollection.fetchAssetCollections(
+                    with: .album,
+                    subtype: .any,
+                    options: nil)
+                userAlbums.enumerateObjects { collection, _, _ in
+                    let title = collection.localizedTitle ?? "Album"
+                    let count = PHAsset.fetchAssets(in: collection, options: options).count
+                    if count > 0 {
+                        fetchedAlbums.append(PhotoAlbum(title: title, collection: collection))
+                        notes.append("\(title)=\(count)")
+                    }
+                }
+
+                let summary = notes.isEmpty ? "none" : notes.joined(separator: ", ")
+                return (fetchedAlbums, summary)
+            }.value
+
+            guard let self else { return }
+            Log.write("library albums \(summary)")
+            self.albums = fetchedAlbums
+            self.selectedAlbumIndex = min(self.selectedAlbumIndex, max(0, fetchedAlbums.count - 1))
+            self.reloadSelectedAlbum()
+            self.buildTabs()
         }
+    }
+
+    nonisolated private static func defaultFetchOptions() -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.predicate = NSPredicate(
+            format: "mediaType == %d OR mediaType == %d",
+            PHAssetMediaType.image.rawValue,
+            PHAssetMediaType.video.rawValue)
+        return options
     }
 
     private func reloadSelectedAlbum(with options: PHFetchOptions? = nil) {
         guard let album = albums[safe: selectedAlbumIndex] else {
             assets = []
             collectionView.reloadData()
+            Log.write("library show no album")
             return
         }
 
-        let fetchOptions = options ?? PHFetchOptions()
-        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        fetchOptions.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d", PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+        let fetchOptions = options ?? Self.defaultFetchOptions()
         let result = PHAsset.fetchAssets(in: album.collection, options: fetchOptions)
-        assets = result.objects(at: IndexSet(integersIn: 0..<result.count))
-        collectionView.isHidden = false
-        collectionView.reloadData()
+        let thumbnailSize = CGSize(width: 420, height: 420)
+        if !self.assets.isEmpty {
+            self.imageManager.stopCachingImages(
+                for: self.assets,
+                targetSize: thumbnailSize,
+                contentMode: .aspectFill,
+                options: nil)
+        }
+        self.assets = result.objects(at: IndexSet(integersIn: 0..<result.count))
+        self.imageManager.startCachingImages(
+            for: self.assets,
+            targetSize: thumbnailSize,
+            contentMode: .aspectFill,
+            options: nil)
+        self.collectionView.isHidden = false
+        self.collectionView.reloadData()
+        Log.write("library show \(album.title) assets=\(self.assets.count)")
     }
 
     private func buildTabs() {
@@ -244,27 +357,24 @@ final class PhotoLibraryViewController: UIViewController {
         guard !albums.isEmpty else { return }
 
         for (index, album) in albums.enumerated() {
-            let button = UIButton(type: .system)
+            let button = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                let title = self.albums[safe: index]?.title ?? "-"
+                Log.write("library album \(title)")
+                self.selectedAlbumIndex = index
+                self.reloadSelectedAlbum()
+                self.buildTabs()
+            })
             button.setTitle(album.title, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 15, weight: index == selectedAlbumIndex ? .bold : .medium)
             button.setTitleColor(index == selectedAlbumIndex ? .label : .secondaryLabel, for: .normal)
-            button.tag = index
-            button.addTarget(self, action: #selector(albumSelected(_:)), for: .touchUpInside)
             tabsStack.addArrangedSubview(button)
         }
     }
 
-    @objc private func albumSelected(_ sender: UIButton) {
-        selectedAlbumIndex = sender.tag
-        reloadSelectedAlbum()
-        buildTabs()
-    }
-
-    @objc private func permissionButtonTapped() {
-        if authorizationStatus == .denied {
-            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-            UIApplication.shared.open(url)
-        } else if authorizationStatus == .limited {
+    private func permissionButtonTapped() {
+        Log.write("library permission button \(photoAccessLabel())")
+        if authorizationStatus == .denied || authorizationStatus == .limited {
             openPhotoSettings()
         } else {
             requestAccessIfNeeded()
@@ -276,17 +386,22 @@ final class PhotoLibraryViewController: UIViewController {
         UIApplication.shared.open(url)
     }
 
-    @objc private func showMoreOptions() {
+    private func showMoreOptions() {
+        Log.write("library more options")
         let sheet = UIAlertController(title: "Library", message: nil, preferredStyle: .actionSheet)
         if authorizationStatus == .limited {
             sheet.addAction(UIAlertAction(title: "Manage Photo Access", style: .default) { [weak self] _ in
+                Log.write("library more manage access")
                 self?.openPhotoSettings()
             })
         }
         sheet.addAction(UIAlertAction(title: "Refresh Library", style: .default) { [weak self] _ in
+            Log.write("library more refresh")
             self?.loadAlbums()
         })
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            Log.write("library more cancel")
+        })
         if let popover = sheet.popoverPresentationController {
             popover.sourceView = moreButton
             popover.sourceRect = moreButton.bounds
@@ -297,14 +412,15 @@ final class PhotoLibraryViewController: UIViewController {
 
 extension PhotoLibraryViewController: PHPhotoLibraryChangeObserver {
     func photoLibraryDidChange(_ changeInstance: PHChange) {
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            Log.write("library photos changed")
             self.loadAlbums()
         }
     }
 }
 
-extension PhotoLibraryViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+extension PhotoLibraryViewController: UICollectionViewDataSource, UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         assets.count
     }
@@ -313,33 +429,60 @@ extension PhotoLibraryViewController: UICollectionViewDataSource, UICollectionVi
         _ collectionView: UICollectionView,
         cellForItemAt indexPath: IndexPath
     ) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(
-            withReuseIdentifier: PhotoAssetCell.reuseIdentifier,
-            for: indexPath) as! PhotoAssetCell
-        cell.configure(asset: assets[indexPath.item], imageManager: imageManager)
-        return cell
+        collectionView.dequeueConfiguredReusableCell(
+            using: cellRegistration,
+            for: indexPath,
+            item: assets[indexPath.item]
+        )
     }
 
-    func collectionView(
-        _ collectionView: UICollectionView,
-        layout collectionViewLayout: UICollectionViewLayout,
-        sizeForItemAt indexPath: IndexPath
-    ) -> CGSize {
-        let width = floor((collectionView.bounds.width - 7) / 3)
-        return CGSize(width: width, height: width)
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard let asset = assets[safe: indexPath.item] else { return }
+        let kind = switch asset.mediaType {
+        case .video: "video"
+        case .image: "image"
+        case .audio: "audio"
+        case .unknown: "unknown"
+        @unknown default: "other"
+        }
+        let album = albums[safe: selectedAlbumIndex]?.title ?? "-"
+        Log.write("library tile \(kind) index=\(indexPath.item) album=\(album)")
+        guard asset.mediaType == .video else { return }
+        let videos = assets.filter { $0.mediaType == .video }
+        let clips = videos.map { item -> ControllerClip in
+            let name = PHAssetResource.assetResources(for: item).first?.originalFilename ?? "Video"
+            return ControllerClip(
+                title: name,
+                posterURL: nil,
+                pageURL: nil,
+                duration: item.duration,
+                assetLocalIdentifier: item.localIdentifier)
+        }
+        let index = videos.firstIndex(of: asset) ?? 0
+        NotificationCenter.default.post(
+            name: .cafariLiteOpenController,
+            object: nil,
+            userInfo: [
+                "clips": clips,
+                "index": index,
+                "onCar": true,
+                "tracksQueue": false,
+                "send": true,
+            ])
     }
 }
 
-private struct PhotoAlbum {
+private struct PhotoAlbum: Sendable {
     let title: String
     let collection: PHAssetCollection
 }
 
 private final class PhotoAssetCell: UICollectionViewCell {
-    static let reuseIdentifier = "PhotoAssetCell"
     private let imageView = UIImageView()
     private let durationLabel = UILabel()
     private var requestID: PHImageRequestID = PHInvalidImageRequestID
+    private weak var imageManager: PHCachingImageManager?
+    private var representedAssetIdentifier: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -372,41 +515,56 @@ private final class PhotoAssetCell: UICollectionViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(asset: PHAsset, imageManager: PHCachingImageManager) {
+    func configure(
+        asset: PHAsset,
+        imageManager: PHCachingImageManager,
+        targetSize: CGSize
+    ) {
         if requestID != PHInvalidImageRequestID {
             imageManager.cancelImageRequest(requestID)
         }
 
+        self.imageManager = imageManager
+        representedAssetIdentifier = asset.localIdentifier
         imageView.image = UIImage(systemName: asset.mediaType == .video ? "video" : "photo")
         durationLabel.text = asset.mediaType == .video ? formatDuration(asset.duration) : nil
 
         let options = PHImageRequestOptions()
+        options.version = .current
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
 
         requestID = imageManager.requestImage(
             for: asset,
-            targetSize: CGSize(width: 420, height: 420),
+            targetSize: targetSize,
             contentMode: .aspectFill,
             options: options) { [weak self] image, _ in
                 guard let image else { return }
                 DispatchQueue.main.async {
-                    self?.imageView.image = image
+                    guard let self,
+                          self.representedAssetIdentifier == asset.localIdentifier else { return }
+                    self.imageView.image = image
                 }
             }
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        if requestID != PHInvalidImageRequestID {
+            imageManager?.cancelImageRequest(requestID)
+        }
+        requestID = PHInvalidImageRequestID
+        representedAssetIdentifier = nil
         imageView.image = nil
         durationLabel.text = nil
-        requestID = PHInvalidImageRequestID
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
         let total = max(0, Int(duration.rounded()))
-        return String(format: "%d:%02d", total / 60, total % 60)
+        return Duration.seconds(total).formatted(
+            .time(pattern: total >= 3600 ? .hourMinuteSecond : .minuteSecond)
+        )
     }
 }
 

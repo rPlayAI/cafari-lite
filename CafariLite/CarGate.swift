@@ -14,7 +14,9 @@
 
 import CoreLocation
 import Foundation
+import Observation
 
+@Observable
 final class CarGate: NSObject, CLLocationManagerDelegate {
   static let shared = CarGate()
 
@@ -22,8 +24,9 @@ final class CarGate: NSObject, CLLocationManagerDelegate {
   static let stateChanged = Notification.Name("CafariLiteCarGateChanged")
 
   private(set) var isMoving = false
-  private let manager = CLLocationManager()
-  private var running = false
+  @ObservationIgnored private let manager = CLLocationManager()
+  @ObservationIgnored private var updatesTask: Task<Void, Never>?
+  @ObservationIgnored private var running = false
 
   // About 11 km/h: faster than a pedestrian, slower than anything that counts
   // as driving, and above the noise floor of a stationary fix.
@@ -31,7 +34,7 @@ final class CarGate: NSObject, CLLocationManagerDelegate {
   // Consecutive samples needed before the state flips, so one bad fix at a
   // traffic light does not stop the video.
   private let samplesToFlip = 3
-  private var agreeing = 0
+  @ObservationIgnored private var agreeing = 0
 
   private override init() {
     super.init()
@@ -47,16 +50,42 @@ final class CarGate: NSObject, CLLocationManagerDelegate {
     if manager.authorizationStatus == .notDetermined {
       manager.requestWhenInUseAuthorization()
     }
-    manager.startUpdatingLocation()
+    updatesTask = Task { @MainActor [weak self] in
+      do {
+        for try await update in CLLocationUpdate.liveUpdates(.automotiveNavigation) {
+          guard !Task.isCancelled, let self else { break }
+          if let speed = update.location?.speed, speed >= 0 {
+            self.processSpeed(speed)
+          }
+        }
+      } catch {
+        Log.write("car gate: location error \(error.localizedDescription)")
+      }
+    }
     Log.write("car gate started, authorization=\(manager.authorizationStatus.rawValue)")
   }
 
   func stop() {
     guard running else { return }
     running = false
+    updatesTask?.cancel()
+    updatesTask = nil
     manager.stopUpdatingLocation()
     setMoving(false)
     Log.write("car gate stopped")
+  }
+
+  private func processSpeed(_ speed: CLLocationSpeed) {
+    let moving = speed > movingSpeed
+    if moving == isMoving {
+      agreeing = 0
+      return
+    }
+    agreeing += 1
+    if agreeing >= samplesToFlip {
+      agreeing = 0
+      setMoving(moving)
+    }
   }
 
   private func setMoving(_ moving: Bool) {
@@ -69,16 +98,7 @@ final class CarGate: NSObject, CLLocationManagerDelegate {
   func locationManager(_ manager: CLLocationManager,
                        didUpdateLocations locations: [CLLocation]) {
     guard let speed = locations.last?.speed, speed >= 0 else { return }
-    let moving = speed > movingSpeed
-    if moving == isMoving {
-      agreeing = 0
-      return
-    }
-    agreeing += 1
-    if agreeing >= samplesToFlip {
-      agreeing = 0
-      setMoving(moving)
-    }
+    processSpeed(speed)
   }
 
   func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

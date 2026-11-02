@@ -1,6 +1,7 @@
 // Saved rows on the Links page, and the mode the three mode buttons share.
 // The car window is still the web view. A send posts cafariLiteSendToCar.
 
+import Observation
 import UIKit
 
 enum PlayMode: String {
@@ -24,18 +25,18 @@ struct SavedLink: Codable, Equatable {
     SavedLink(
       id: UUID(uuidString: "A1A1A1A1-0001-4000-8000-000000000001")!,
       title: "How to use my CarPlay Video app",
-      urlString: "https://m.youtube.com/results?search_query=How+to+use+my+CarPlay+Video+app",
-      starred: true, thumbStyle: "video", durationLabel: "04:12"),
+      urlString: "https://www.youtube.com/watch?v=gI3Tj2KP290",
+      starred: true, thumbStyle: "video", durationLabel: "9:04"),
     SavedLink(
       id: UUID(uuidString: "A1A1A1A1-0002-4000-8000-000000000002")!,
       title: "KT #789 - TIM BUTTERLY + KIRK FOX",
-      urlString: "https://m.youtube.com/results?search_query=KT+789+Tim+Butterly+Kirk+Fox",
-      starred: true, thumbStyle: "kt789", durationLabel: "1:20"),
+      urlString: "https://www.youtube.com/watch?v=ntTShp2YNlo",
+      starred: true, thumbStyle: "kt789", durationLabel: "2:04:06"),
     SavedLink(
       id: UUID(uuidString: "A1A1A1A1-0003-4000-8000-000000000003")!,
       title: "KT #780 - FLUFFY - HARLAND WILLIAMS",
-      urlString: "https://m.youtube.com/results?search_query=KT+780+Fluffy+Harland+Williams",
-      starred: true, thumbStyle: "kt780", durationLabel: "2:05"),
+      urlString: "https://www.youtube.com/watch?v=pTWRjXX6pc4",
+      starred: true, thumbStyle: "kt780", durationLabel: "2:41:17"),
     SavedLink(
       id: UUID(uuidString: "A1A1A1A1-0004-4000-8000-000000000004")!,
       title: "Test stream (Apple HLS sample)",
@@ -54,26 +55,21 @@ extension Notification.Name {
   static let cafariLitePlayModeChanged = Notification.Name("CafariLitePlayModeChanged")
 }
 
+@Observable
 final class SavedLinkStore {
   static let shared = SavedLinkStore()
   private(set) var links: [SavedLink] = []
-  private let fileURL: URL
+  @ObservationIgnored private let fileURL: URL
 
   private init() {
-    let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    let dir = URL.applicationSupportDirectory
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    fileURL = dir.appendingPathComponent("saved-links.json")
+    fileURL = dir.appending(path: "saved-links.json")
     if let data = try? Data(contentsOf: fileURL),
        let decoded = try? JSONDecoder().decode([SavedLink].self, from: data) {
       links = decoded
     }
-    let previousStarterIDs: Set<UUID> = [
-      UUID(uuidString: "A1A1A1A1-0001-4000-8000-000000000001")!,
-      UUID(uuidString: "A1A1A1A1-0002-4000-8000-000000000002")!,
-      UUID(uuidString: "A1A1A1A1-0003-4000-8000-000000000003")!,
-      UUID(uuidString: "A1A1A1A1-0004-4000-8000-000000000004")!,
-      UUID(uuidString: "A1A1A1A1-0005-4000-8000-000000000005")!
-    ]
+    let previousStarterIDs = Set(SavedLink.stitchRows.map(\.id))
     if links.isEmpty || links.contains(where: { previousStarterIDs.contains($0.id) }) {
       links = SavedLink.stitchRows
       if let data = try? JSONEncoder().encode(links) {
@@ -83,8 +79,12 @@ final class SavedLinkStore {
   }
 
   func add(url: URL, title: String? = nil) {
-    let name = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let resolved = (name?.isEmpty == false) ? name! : (url.host ?? url.absoluteString)
+    let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolved = if let trimmed, !trimmed.isEmpty {
+      trimmed
+    } else {
+      url.host() ?? url.absoluteString
+    }
     links.insert(SavedLink(id: UUID(), title: resolved, urlString: url.absoluteString, starred: false), at: 0)
     save()
   }
@@ -104,6 +104,7 @@ final class SavedLinkStore {
 }
 
 /// The item the CarPlay pill sends, and the mode the three Links buttons share.
+@Observable
 final class PhonePlayback {
   static let shared = PhonePlayback()
 
@@ -123,7 +124,27 @@ final class PhonePlayback {
 
   func setQueue(_ links: [SavedLink], index: Int) {
     queue = links
+    queueIndex = links.indices.contains(index) ? index : 0
+  }
+
+  func noteIndex(_ index: Int) {
+    guard queue.indices.contains(index) else { return }
     queueIndex = index
+    let link = queue[index]
+    remember(title: link.title, url: link.url)
+  }
+
+  func move(by delta: Int) -> SavedLink? {
+    let next = queueIndex + delta
+    guard queue.indices.contains(next) else { return nil }
+    queueIndex = next
+    let link = queue[next]
+    remember(title: link.title, url: link.url)
+    return link
+  }
+
+  func clipQueue() -> [ControllerClip] {
+    queue.map { ControllerClip(link: $0) }
   }
 }
 
@@ -145,6 +166,7 @@ enum CarSender {
 
   /// Web on car and Mirror hand the page across.
   static func sendPage(_ url: URL) {
+    SessionCounts.carAction()
     Log.write("sendPage \(url.absoluteString)")
     NotificationCenter.default.post(
       name: .cafariLiteSendToCar, object: nil, userInfo: ["url": url])
@@ -152,6 +174,7 @@ enum CarSender {
 
   /// Stream hands the bare player when the link is a YouTube video.
   static func sendDirect(_ url: URL) {
+    SessionCounts.carAction()
     let destination = BrowserViewController.playerURL(for: url) ?? url
     Log.write("sendDirect \(url.absoluteString) -> \(destination.absoluteString)")
     NotificationCenter.default.post(

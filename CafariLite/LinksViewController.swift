@@ -3,6 +3,7 @@
 // Web on car only sets the mode. Stream plays the current item on the car.
 // Mirror shows the current page on the phone and sends that page to the car.
 
+import Observation
 import UIKit
 
 private enum Taste {
@@ -44,9 +45,13 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     .webOnCar: UIButton(type: .system),
     .mirror: UIButton(type: .system),
   ]
-  private var carObserver: NSObjectProtocol?
-  private var linksObserver: NSObjectProtocol?
-  private var modeObserver: NSObjectProtocol?
+  private var observers: [NSObjectProtocol] = []
+  private var didTraceLink = false
+
+  deinit {
+    let center = NotificationCenter.default
+    observers.forEach { center.removeObserver($0) }
+  }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -63,7 +68,7 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     title.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(title)
 
-    carPill.addTarget(self, action: #selector(pillTapped), for: .touchUpInside)
+    carPill.addAction(UIAction { [weak self] _ in self?.pillTapped() }, for: .touchUpInside)
     carPill.layer.cornerRadius = 11
     carPill.layer.borderWidth = 1
     carPill.layer.borderColor = Taste.emerald.withAlphaComponent(0.20).cgColor
@@ -71,7 +76,7 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     carPill.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(carPill)
 
-    let add = UIButton(type: .system)
+    let add = UIButton(type: .system, primaryAction: UIAction { [weak self] _ in self?.addTapped() })
     let plus = UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
     add.setImage(UIImage(systemName: "plus", withConfiguration: plus), for: .normal)
     add.tintColor = Taste.charcoal
@@ -84,7 +89,6 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     add.layer.shadowRadius = 3
     add.layer.shadowOffset = CGSize(width: 0, height: 1)
     add.accessibilityLabel = "Add new link"
-    add.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
     add.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(add)
 
@@ -102,14 +106,13 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     modes.translatesAutoresizingMaskIntoConstraints = false
     modes.accessibilityLabel = "Streaming modes"
     for mode in [PlayMode.stream, .webOnCar, .mirror] {
-      let button = modeButtons[mode]!
-      button.tag = tagFor(mode)
-      button.addTarget(self, action: #selector(modeTapped(_:)), for: .touchUpInside)
+      guard let button = modeButtons[mode] else { continue }
+      button.addAction(UIAction { [weak self] _ in self?.selectMode(mode) }, for: .touchUpInside)
       modes.addArrangedSubview(button)
     }
     header.addSubview(modes)
 
-    let paste = UIButton(type: .custom)
+    let paste = UIButton(type: .custom, primaryAction: UIAction { [weak self] _ in self?.pasteTapped() })
     paste.backgroundColor = .white
     paste.layer.cornerRadius = 18
     paste.layer.borderWidth = 1
@@ -119,7 +122,6 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     paste.layer.shadowRadius = 4
     paste.layer.shadowOffset = CGSize(width: 0, height: 1)
     paste.accessibilityLabel = "Paste video or web URL"
-    paste.addTarget(self, action: #selector(pasteTapped), for: .touchUpInside)
     paste.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(paste)
 
@@ -154,8 +156,8 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     capsule.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(capsule)
 
-    let carPlayAll = iconButton("car", "Play all on car display", #selector(playAllOnCar))
-    let phonePlayAll = iconButton("iphone", "Play all on phone", #selector(playAllOnPhone))
+    let carPlayAll = iconButton("car", "Play all on car display") { [weak self] in self?.playAllOnCar() }
+    let phonePlayAll = iconButton("iphone", "Play all on phone") { [weak self] in self?.playAllOnPhone() }
     let divider = UIView()
     divider.backgroundColor = Taste.whisper
     divider.translatesAutoresizingMaskIntoConstraints = false
@@ -169,7 +171,7 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     selectButton.setTitle("Select", for: .normal)
     selectButton.setTitleColor(Taste.electric, for: .normal)
     selectButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
-    selectButton.addTarget(self, action: #selector(selectTapped), for: .touchUpInside)
+    selectButton.addAction(UIAction { [weak self] _ in self?.selectTapped() }, for: .touchUpInside)
     selectButton.translatesAutoresizingMaskIntoConstraints = false
     header.addSubview(selectButton)
 
@@ -254,25 +256,48 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     ])
 
     let center = NotificationCenter.default
-    carObserver = center.addObserver(forName: .cafariLiteCarConnected, object: nil, queue: .main) { [weak self] _ in
-      self?.refreshPill()
-    }
-    center.addObserver(forName: .cafariLiteCarDisconnected, object: nil, queue: .main) { [weak self] _ in
-      self?.refreshPill()
-    }
-    linksObserver = center.addObserver(forName: .cafariLiteLinksChanged, object: nil, queue: .main) { [weak self] _ in
-      self?.refreshList()
-    }
-    modeObserver = center.addObserver(forName: .cafariLitePlayModeChanged, object: nil, queue: .main) { [weak self] _ in
-      self?.refreshModes()
-    }
+    observers = [
+      center.addObserver(forName: .cafariLiteCarConnected, object: nil, queue: .main) { [weak self] _ in
+        self?.refreshPill()
+      },
+      center.addObserver(forName: .cafariLiteCarDisconnected, object: nil, queue: .main) { [weak self] _ in
+        self?.refreshPill()
+      },
+      center.addObserver(forName: .cafariLiteLinksChanged, object: nil, queue: .main) { [weak self] _ in
+        self?.refreshList()
+      },
+      center.addObserver(forName: .cafariLitePlayModeChanged, object: nil, queue: .main) { [weak self] _ in
+        self?.refreshModes()
+      },
+    ]
     refreshPill()
-    refreshModes()
-    refreshList()
+    observeState()
+  }
+
+  private func observeState() {
+    withObservationTracking {
+      refreshModes()
+      refreshList()
+    } onChange: { [weak self] in
+      Task { @MainActor in
+        self?.observeState()
+      }
+    }
   }
 
   override var preferredStatusBarStyle: UIStatusBarStyle {
     traitCollection.userInterfaceStyle == .dark ? .lightContent : .darkContent
+  }
+
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    guard !didTraceLink, ProcessInfo.processInfo.environment["CAFARI_TRACE_LINK"] == "1" else { return }
+    didTraceLink = true
+    guard !store.links.isEmpty else {
+      Log.write("links trace no row")
+      return
+    }
+    tableView(table, didSelectRowAt: IndexPath(row: 0, section: 0))
   }
 
   func scrollToTop() {
@@ -297,11 +322,21 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     tableView.deselectRow(at: indexPath, animated: true)
     let link = store.links[indexPath.row]
     if selecting {
-      if checked.contains(link.id) { checked.remove(link.id) } else { checked.insert(link.id) }
+      if checked.contains(link.id) {
+        checked.remove(link.id)
+        Log.write("links select row \(link.title) checked=false")
+      } else {
+        checked.insert(link.id)
+        Log.write("links select row \(link.title) checked=true")
+      }
       tableView.reloadRows(at: [indexPath], with: .none)
       return
     }
-    guard let url = link.url else { return }
+    guard let url = link.url else {
+      Log.write("links row no url \(link.title)")
+      return
+    }
+    Log.write("links row \(link.title) mode=\(PhonePlayback.shared.mode.rawValue)")
     PhonePlayback.shared.remember(title: link.title, url: url)
     PhonePlayback.shared.setQueue(store.links, index: indexPath.row)
     switch PhonePlayback.shared.mode {
@@ -309,38 +344,45 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
       CarSender.sendDirect(url)
     case .webOnCar, .mirror:
       CarSender.sendPage(url)
-      let page: UIViewController
-      if url.host?.contains("youtube.") == true {
-        page = BrowserViewController(showsStatus: true, initialURL: url)
+      let page: UIViewController = if url.host()?.contains("youtube.") == true {
+        BrowserViewController(showsStatus: true, initialURL: url)
       } else {
-        page = PageBrowserController(url: url, title: link.title)
+        PageBrowserController(url: url, title: link.title)
       }
       page.modalPresentationStyle = .fullScreen
       present(page, animated: true)
     }
   }
 
-  @objc private func pillTapped() {
-    if !CarSender.sendCurrentItem() {
+  private func pillTapped() {
+    guard PhonePlayback.shared.currentURL != nil else {
+      Log.write("links pill no item")
       let alert = UIAlertController(title: "CarPlay", message: "No item to send.", preferredStyle: .alert)
       alert.addAction(UIAlertAction(title: "OK", style: .cancel))
       present(alert, animated: true)
+      return
     }
+    Log.write("links pill mode=\(PhonePlayback.shared.mode.rawValue)")
+    CarSender.sendCurrentItem()
   }
 
-  @objc private func addTapped() {
+  private func addTapped() {
     let alert = UIAlertController(title: "Add new link", message: nil, preferredStyle: .alert)
     alert.addTextField { $0.placeholder = "Video or web URL" }
     alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
     alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self] _ in
-      guard let raw = alert.textFields?.first?.text, let url = LinkURL.normalize(raw) else { return }
+      guard let raw = alert.textFields?.first?.text, let url = LinkURL.normalize(raw) else {
+        Log.write("links add no url")
+        return
+      }
+      Log.write("links add \(url.absoluteString)")
       self?.store.add(url: url)
     })
     present(alert, animated: true)
   }
 
-  @objc private func modeTapped(_ sender: UIButton) {
-    let mode = modeFor(tag: sender.tag)
+  private func selectMode(_ mode: PlayMode) {
+    Log.write("links mode \(mode.rawValue)")
     PhonePlayback.shared.mode = mode
     switch mode {
     case .stream:
@@ -358,45 +400,71 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
     }
   }
 
-  @objc private func pasteTapped() {
+  private func pasteTapped() {
     guard let raw = UIPasteboard.general.string, let url = LinkURL.normalize(raw) else {
+      Log.write("links paste no url")
       let alert = UIAlertController(title: "Paste video or web URL", message: "The clipboard has no link.", preferredStyle: .alert)
       alert.addAction(UIAlertAction(title: "OK", style: .cancel))
       present(alert, animated: true)
       return
     }
+    Log.write("links paste \(url.absoluteString)")
     store.add(url: url)
   }
 
-  @objc private func playAllOnCar() {
-    guard let first = store.links.first, let url = first.url else { return }
+  private func playAllOnCar() {
+    guard let first = store.links.first, let url = first.url else {
+      Log.write("links play all on car empty")
+      return
+    }
+    Log.write("links play all on car \(first.title)")
     PhonePlayback.shared.setQueue(store.links, index: 0)
     PhonePlayback.shared.remember(title: first.title, url: url)
+    openQueue(onCar: true, send: false)
     playCurrentOnCar(direct: PhonePlayback.shared.mode == .stream)
-    _ = url
   }
 
-  @objc private func playAllOnPhone() {
-    guard let first = store.links.first, let url = first.url else { return }
+  private func playAllOnPhone() {
+    guard let first = store.links.first, let url = first.url else {
+      Log.write("links play all on phone empty")
+      return
+    }
+    Log.write("links play all on phone \(first.title) direct=\(PhonePlayback.shared.mode == .stream)")
     PhonePlayback.shared.setQueue(store.links, index: 0)
     PhonePlayback.shared.remember(title: first.title, url: url)
-    let page = PhonePlaybackPresenter.make(
-      url: url,
-      title: first.title,
-      direct: PhonePlayback.shared.mode == .stream)
-    page.modalPresentationStyle = .fullScreen
-    present(page, animated: true)
+    openQueue(onCar: false, send: false)
   }
 
-  @objc private func selectTapped() {
+  private func openQueue(onCar: Bool, send: Bool) {
+    NotificationCenter.default.post(
+      name: .cafariLiteOpenController,
+      object: nil,
+      userInfo: [
+        "clips": PhonePlayback.shared.clipQueue(),
+        "index": PhonePlayback.shared.queueIndex,
+        "onCar": onCar,
+        "tracksQueue": true,
+        "send": send,
+      ])
+  }
+
+  private func selectTapped() {
     selecting.toggle()
-    if !selecting { checked.removeAll() }
+    if selecting {
+      Log.write("links select on")
+    } else {
+      Log.write("links select off checked=\(checked.count)")
+      checked.removeAll()
+    }
     selectButton.setTitle(selecting ? "Done" : "Select", for: .normal)
     table.reloadData()
   }
 
   private func playCurrentOnCar(direct: Bool) {
-    guard let url = PhonePlayback.shared.currentURL else { return }
+    guard let url = PhonePlayback.shared.currentURL else {
+      Log.write("links play on car no item direct=\(direct)")
+      return
+    }
     if direct { CarSender.sendDirect(url) } else { CarSender.sendPage(url) }
   }
 
@@ -461,35 +529,18 @@ final class LinksViewController: UIViewController, UITableViewDataSource, UITabl
 
   private func titleFor(_ mode: PlayMode) -> String {
     switch mode {
-    case .stream: return "Stream"
-    case .webOnCar: return "Web on car"
-    case .mirror: return "Mirror"
+    case .stream: "Stream"
+    case .webOnCar: "Web on car"
+    case .mirror: "Mirror"
     }
   }
 
-  private func tagFor(_ mode: PlayMode) -> Int {
-    switch mode {
-    case .stream: return 1
-    case .webOnCar: return 2
-    case .mirror: return 3
-    }
-  }
-
-  private func modeFor(tag: Int) -> PlayMode {
-    switch tag {
-    case 1: return .stream
-    case 3: return .mirror
-    default: return .webOnCar
-    }
-  }
-
-  private func iconButton(_ symbol: String, _ access: String, _ action: Selector) -> UIButton {
-    let button = UIButton(type: .system)
+  private func iconButton(_ symbol: String, _ access: String, _ handler: @escaping () -> Void) -> UIButton {
+    let button = UIButton(type: .system, primaryAction: UIAction { _ in handler() })
     let config = UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
     button.setImage(UIImage(systemName: symbol, withConfiguration: config), for: .normal)
     button.tintColor = Taste.charcoal.withAlphaComponent(0.8)
     button.accessibilityLabel = access
-    button.addTarget(self, action: action, for: .touchUpInside)
     button.translatesAutoresizingMaskIntoConstraints = false
     return button
   }
@@ -522,7 +573,7 @@ private final class LinkRowCell: UITableViewCell {
     contentView.addSubview(nameLabel)
 
     star.accessibilityLabel = "Favorite item"
-    star.addTarget(self, action: #selector(starTapped), for: .touchUpInside)
+    star.addAction(UIAction { [weak self] _ in self?.onStar?() }, for: .touchUpInside)
     star.translatesAutoresizingMaskIntoConstraints = false
     contentView.addSubview(star)
 
@@ -566,13 +617,11 @@ private final class LinkRowCell: UITableViewCell {
 
   private static func style(for link: SavedLink) -> String {
     if let style = link.thumbStyle, !style.isEmpty { return style }
-    let host = (link.url?.host ?? "").lowercased()
+    let host = (link.url?.host() ?? "").lowercased()
     if link.urlString.contains("m3u8") { return "hls" }
     if host.contains("youtu") { return "web" }
     return "video"
   }
-
-  @objc private func starTapped() { onStar?() }
 }
 
 private final class LinkThumbView: UIView {
