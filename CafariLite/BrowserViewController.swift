@@ -11,7 +11,7 @@ import UIKit
 import WebKit
 
 final class BrowserViewController: UIViewController, WKNavigationDelegate {
-  private let home = URL(string: "https://m.youtube.com")!
+  private let home: URL
   private let showsStatus: Bool
   private var webView: WKWebView!
   private var statusLabel: UILabel?
@@ -20,8 +20,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
   private var wasSigningIn = false
   private var loggedCarLayout = false
   private var drivingCover: UIView?
+  private var loggedCarPlaying = false
+  private let carDim = UIView()
+  private let playbackRelay = CarPlaybackRelay()
+  private var floatingBar: UIView?
 
-  init(showsStatus: Bool) {
+  init(showsStatus: Bool, initialURL: URL? = nil) {
+    self.home = initialURL ?? URL(string: "https://m.youtube.com")!
     self.showsStatus = showsStatus
     super.init(nibName: nil, bundle: nil)
   }
@@ -45,6 +50,12 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
     configuration.allowsInlineMediaPlayback = true
     configuration.mediaTypesRequiringUserActionForPlayback = []
     configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+    if !showsStatus {
+      let hook = WKUserScript(source: Self.playbackHook, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
+      configuration.userContentController.addUserScript(hook)
+      playbackRelay.owner = self
+      configuration.userContentController.add(playbackRelay, name: "cafariPlayback")
+    }
 
     webView = WKWebView(frame: .zero, configuration: configuration)
     webView.navigationDelegate = self
@@ -82,8 +93,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
       ])
     }
 
+    floatingBar = bar
     Log.write("loading \(home.absoluteString)")
-    webView.load(URLRequest(url: home))
+    loadPage(home)
+    applyCarChrome()
 
     if showsStatus {
       NotificationCenter.default.addObserver(
@@ -109,8 +122,17 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
       NotificationCenter.default.addObserver(
         self, selector: #selector(drivingStateChanged),
         name: CarGate.stateChanged, object: nil)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(remoteCommand(_:)),
+        name: .cafariLiteCarRemoteCommand, object: nil)
       if Settings.playOnlyWhenParked { CarGate.shared.start() }
+      installCarDim()
     }
+  }
+
+  deinit {
+    guard !showsStatus, let webView else { return }
+    webView.configuration.userContentController.removeScriptMessageHandler(forName: "cafariPlayback")
   }
 
   private func makeToolbar() -> UIView {
@@ -122,26 +144,32 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
     container.layoutMargins = UIEdgeInsets(top: 6, left: 16, bottom: 6, right: 16)
     container.backgroundColor = .secondarySystemBackground
 
-    func button(_ systemName: String, _ action: Selector) -> UIButton {
-      let b = UIButton(type: .system)
+    func button(_ systemName: String, _ handler: @escaping () -> Void) -> UIButton {
+      let b = UIButton(type: .system, primaryAction: UIAction { _ in handler() })
       b.setImage(UIImage(systemName: systemName), for: .normal)
-      b.addTarget(self, action: action, for: .touchUpInside)
       return b
     }
 
-    container.addArrangedSubview(button("chevron.backward", #selector(goBack)))
-    container.addArrangedSubview(button("chevron.forward", #selector(goForward)))
-    container.addArrangedSubview(button("house", #selector(goHome)))
-    container.addArrangedSubview(button("arrow.clockwise", #selector(reload)))
+    container.addArrangedSubview(button("chevron.backward") { [weak self] in self?.webView.goBack() })
+    container.addArrangedSubview(button("chevron.forward") { [weak self] in self?.webView.goForward() })
+    container.addArrangedSubview(button("house") { [weak self] in
+      guard let self else { return }
+      self.webView.load(URLRequest(url: self.home))
+    })
+    container.addArrangedSubview(button("arrow.clockwise") { [weak self] in self?.webView.reload() })
     if showsStatus {
       // Hand whatever the phone is showing to the car window. The car cannot
       // be typed into, so finding something is the phone's job and this is how
       // the result gets across.
-      let cast = button("tv", #selector(sendToCar))
+      let cast = button("tv") { [weak self] in self?.sendToCar() }
       cast.accessibilityLabel = "Send to car screen"
       container.addArrangedSubview(cast)
-      let gear = button("gearshape", #selector(showSettings))
+
+      let gear = UIButton(type: .system)
+      gear.setImage(UIImage(systemName: "gearshape"), for: .normal)
       gear.accessibilityLabel = "Settings"
+      gear.menu = makeSettingsMenu()
+      gear.showsMenuAsPrimaryAction = true
       container.addArrangedSubview(gear)
     }
 
@@ -158,50 +186,45 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
     return container
   }
 
-  @objc private func goBack() { webView.goBack() }
-  @objc private func goForward() { webView.goForward() }
-  @objc private func reload() { webView.reload() }
-  @objc private func goHome() { webView.load(URLRequest(url: home)) }
-
-  @objc private func showSettings() {
-    let sheet = UIAlertController(title: "Car screen", message: nil,
-                                  preferredStyle: .actionSheet)
-    let nativeOn = Settings.carNativeResolution
-    sheet.addAction(UIAlertAction(
-      title: (nativeOn ? "✓ " : "") + "Use the car's own resolution",
-      style: .default) { _ in
-        Settings.carNativeResolution = !nativeOn
-        NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
-      })
-    let borderOn = Settings.debugBorder
-    sheet.addAction(UIAlertAction(
-      title: (borderOn ? "✓ " : "") + "Show the debug border",
-      style: .default) { _ in
-        Settings.debugBorder = !borderOn
-        NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
-      })
-    let parkedOn = Settings.playOnlyWhenParked
-    sheet.addAction(UIAlertAction(
-      title: (parkedOn ? "✓ " : "") + "Play only when parked",
-      style: .default) { _ in
-        Settings.playOnlyWhenParked = !parkedOn
-        NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
-      })
-    let sidebarOn = Settings.avoidSidebar
-    sheet.addAction(UIAlertAction(
-      title: (sidebarOn ? "✓ " : "") + "Keep clear of the sidebar",
-      style: .default) { _ in
-        Settings.avoidSidebar = !sidebarOn
-        NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
-      })
-    sheet.addAction(UIAlertAction(title: "Done", style: .cancel))
-    sheet.popoverPresentationController?.sourceView = view
-    sheet.popoverPresentationController?.sourceRect =
-      CGRect(x: view.bounds.midX, y: 60, width: 1, height: 1)
-    present(sheet, animated: true)
+  private func makeSettingsMenu() -> UIMenu {
+    UIMenu(title: "Car screen", children: [
+      UIDeferredMenuElement.uncached { completion in
+        let items: [UIMenuElement] = [
+          UIAction(
+            title: "Use the car's own resolution",
+            state: Settings.carNativeResolution ? .on : .off
+          ) { _ in
+            Settings.carNativeResolution.toggle()
+            NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
+          },
+          UIAction(
+            title: "Show the debug border",
+            state: Settings.debugBorder ? .on : .off
+          ) { _ in
+            Settings.debugBorder.toggle()
+            NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
+          },
+          UIAction(
+            title: "Play only when parked",
+            state: Settings.playOnlyWhenParked ? .on : .off
+          ) { _ in
+            Settings.playOnlyWhenParked.toggle()
+            NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
+          },
+          UIAction(
+            title: "Keep clear of the sidebar",
+            state: Settings.avoidSidebar ? .on : .off
+          ) { _ in
+            Settings.avoidSidebar.toggle()
+            NotificationCenter.default.post(name: .cafariLiteSettingsChanged, object: nil)
+          },
+        ]
+        completion(items)
+      }
+    ])
   }
 
-  @objc private func sendToCar() {
+  private func sendToCar() {
     guard let url = webView.url else { return }
     // Cafari sends the car a VIDEO, not a page. Do the same: when the phone is
     // on a YouTube video, hand the car the bare player for that video instead
@@ -217,24 +240,75 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
     statusLabel?.text = connected ? "Sent to the car" : "No car screen to send to"
   }
 
-  /// The bare player for a YouTube link, or nil if this is not one. Handles
-  /// the watch, short-link and shorts forms.
-  static func playerURL(for url: URL) -> URL? {
-    guard let host = url.host?.lowercased() else { return nil }
-    var videoID: String?
+  /// Watch, short-link, shorts, and embed forms. Nil when this is not YouTube.
+  static func youtubeID(for url: URL) -> String? {
+    guard let host = url.host()?.lowercased() else { return nil }
+    let parts = url.pathComponents
     if host.contains("youtu.be") {
-      videoID = url.pathComponents.dropFirst().first
-    } else if host.contains("youtube.com") {
-      if url.path.hasPrefix("/shorts/") {
-        videoID = url.pathComponents.dropFirst(2).first
-      } else if let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems {
-        videoID = items.first { $0.name == "v" }?.value
-      }
+      let id = parts.dropFirst().first
+      return (id?.isEmpty == false) ? id : nil
     }
-    guard let id = videoID, !id.isEmpty else { return nil }
+    guard host.contains("youtube.com") else { return nil }
+    if url.path.hasPrefix("/shorts/") || url.path.hasPrefix("/embed/") {
+      let id = parts.dropFirst(2).first
+      return (id?.isEmpty == false) ? id : nil
+    }
+    guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+          let id = items.first(where: { $0.name == "v" })?.value, !id.isEmpty else { return nil }
+    return id
+  }
+
+  /// The bare player for a YouTube link, or nil if this is not one.
+  static func playerURL(for url: URL) -> URL? {
+    guard let id = youtubeID(for: url) else { return nil }
     // playsinline keeps it in our window rather than handing it to the system
     // player, which on the car screen would put it somewhere we cannot see.
-    return URL(string: "https://www.youtube.com/embed/\(id)?autoplay=1&playsinline=1&rel=0")
+    var query = ["autoplay=1", "playsinline=1", Settings.autoPlayYouTubeQueue ? "rel=1" : "rel=0"]
+    if Settings.showCaptions { query.append("cc_load_policy=1") }
+    return URL(string: "https://www.youtube.com/embed/\(id)?\(query.joined(separator: "&"))")
+  }
+
+  /// Load a new page into the car or phone browser that is already on screen.
+  func show(url: URL) {
+    Log.write("show \(url.absoluteString)")
+    loadPage(url)
+  }
+
+  private func loadPage(_ url: URL) {
+    guard !url.isFileURL else {
+      loadLocalVideo(url)
+      return
+    }
+    webView.load(URLRequest(url: url))
+  }
+
+  /// A raw video file has no document for the remote's script to find.
+  /// A small page next to the file gives it a real <video> element.
+  private func loadLocalVideo(_ url: URL) {
+    let folder = url.deletingLastPathComponent()
+    let page = folder.appending(path: "playback.html")
+    let name = url.lastPathComponent
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "\"", with: "&quot;")
+    let html = """
+    <!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>\(name)</title>
+    <style>html,body{margin:0;background:#000;height:100%}video{width:100%;height:100%;background:#000}</style>
+    </head><body><video src="\(name)" autoplay playsinline controls></video></body></html>
+    """
+    do {
+      try html.write(to: page, atomically: true, encoding: .utf8)
+      webView.loadFileURL(page, allowingReadAccessTo: folder)
+    } catch {
+      Log.write("local video page failed \(error.localizedDescription)")
+      SessionCounts.playerFault()
+    }
+  }
+
+  private func applyCarChrome() {
+    guard !showsStatus else { return }
+    floatingBar?.isHidden = Settings.fullScreenCar
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
@@ -248,6 +322,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
   }
 
   private func showLoadFailure(_ error: Error) {
+    let cancelled = (error as NSError).code == NSURLErrorCancelled
+    if !cancelled {
+      SessionCounts.playbackError()
+      SessionCounts.playerFault()
+    }
     Log.write("load FAILED: \(error.localizedDescription)")
     // A page that does not load used to leave an empty view and no clue.
     let label = UILabel()
@@ -269,6 +348,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
 
   @objc private func settingsChanged() {
     loggedCarLayout = false
+    applyCarChrome()
     view.setNeedsLayout()
     if Settings.playOnlyWhenParked {
       CarGate.shared.start()
@@ -286,8 +366,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
   private func showDrivingCover() {
     // Stop the sound as well as the picture: a video the driver can hear is
     // still a video the driver is following.
-    webView.evaluateJavaScript(
-      "document.querySelectorAll('video').forEach(v => v.pause())", completionHandler: nil)
+    Task { [weak webView] in
+      _ = try? await webView?.evaluateJavaScript(
+        "document.querySelectorAll('video').forEach(v => v.pause())")
+    }
     guard drivingCover == nil else { return }
     let cover = UIView()
     cover.backgroundColor = .black
@@ -322,17 +404,22 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
   }
 
   @objc private func sendToCarRequested(_ note: Notification) {
-    guard let url = note.userInfo?["url"] as? URL else { return }
-    webView.load(URLRequest(url: url))
+    guard let url = note.userInfo?["url"] as? URL else {
+      Log.write("car browser send missing url")
+      return
+    }
+    Log.write("car browser load \(url.absoluteString)")
+    loadPage(url)
   }
 
   @objc private func accountChanged() {
     // Never interrupt something that is playing on the car screen.
-    webView.evaluateJavaScript(
-      "!!document.querySelector('video') && !document.querySelector('video').paused"
-    ) { [weak self] playing, _ in
+    Task { [weak self] in
+      guard let self, let webView = self.webView else { return }
+      let playing = try? await webView.evaluateJavaScript(
+        "!!document.querySelector('video') && !document.querySelector('video').paused")
       if (playing as? Bool) == true { return }
-      self?.webView.reload()
+      webView.reload()
     }
   }
 
@@ -364,8 +451,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
     // page may use is the window minus that -- the same rule Cafari applies to
     // the video it puts on the car. Without it the left edge of the picture
     // sits under the sidebar.
-    let bounds = Settings.avoidSidebar ? view.safeAreaLayoutGuide.layoutFrame
-                                       : view.bounds
+    let honorSidebar = Settings.avoidSidebar && !Settings.fullScreenCar
+    let bounds = honorSidebar ? view.safeAreaLayoutGuide.layoutFrame : view.bounds
     guard bounds.width > 0, bounds.height > 0 else { return }
 
     webView.layer.borderColor = UIColor.systemGreen.cgColor
@@ -403,8 +490,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
     Log.write("didFinish \(webView.url?.absoluteString ?? "-") web=\(webView.bounds.size)")
-    guard showsStatus else { return }  // only the phone window watches for this
-    let host = webView.url?.host ?? ""
+    if !showsStatus {
+      Task {
+        _ = try? await webView.evaluateJavaScript(Self.playbackHook)
+      }
+      return
+    }
+    let host = webView.url?.host() ?? ""
     if host.contains("accounts.google") || host.contains("accounts.youtube") {
       wasSigningIn = true
       return
@@ -422,5 +514,158 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate {
       scene.session.role == cafariLiteCarPlayRole
     }
     statusLabel?.text = connected ? "On the car screen" : "Car screen not connected"
+  }
+
+  private func installCarDim() {
+    carDim.backgroundColor = .black
+    carDim.alpha = 0
+    carDim.isUserInteractionEnabled = false
+    carDim.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(carDim)
+    NSLayoutConstraint.activate([
+      carDim.topAnchor.constraint(equalTo: view.topAnchor),
+      carDim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      carDim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      carDim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+    ])
+  }
+
+  fileprivate func receiveCarPlayback(_ message: WKScriptMessage) {
+    guard let body = message.body as? [String: Any] else { return }
+    let playing = (body["playing"] as? NSNumber)?.boolValue ?? false
+    let current = (body["current"] as? NSNumber)?.doubleValue ?? 0
+    let duration = (body["duration"] as? NSNumber)?.doubleValue ?? 0
+    var info: [String: Any] = [
+      "playing": playing,
+      "current": current,
+      "duration": duration,
+      "origin": "web",
+    ]
+    let ended = (body["ended"] as? NSNumber)?.boolValue ?? (body["ended"] as? Bool ?? false)
+    info["ended"] = ended
+    if let title = body["title"] as? String { info["title"] = title }
+    if let urlString = body["url"] as? String, let url = URL(string: urlString) {
+      info["pageURL"] = url
+    }
+    if playing && !loggedCarPlaying {
+      loggedCarPlaying = true
+      Log.write("car web video playing \(info["title"] as? String ?? "-")")
+    }
+    if !playing { loggedCarPlaying = false }
+    NotificationCenter.default.post(name: .cafariLiteCarPlayback, object: nil, userInfo: info)
+  }
+
+  @objc private func remoteCommand(_ note: Notification) {
+    let info = note.userInfo ?? [:]
+    let command = info["command"] as? String ?? ""
+    if !command.isEmpty { SessionCounts.carAction() }
+    Log.write("car remote \(command.isEmpty ? "empty" : command)")
+    switch command {
+    case CarRemoteCommand.toggle:
+      evaluateCar("(function(){var v=document.querySelector('video');if(!v)return;if(v.paused){v.play()}else{v.pause()}})()")
+    case CarRemoteCommand.seekBy:
+      let delta = number(info, "delta")
+      evaluateCar("(function(){var v=document.querySelector('video');if(!v)return;var next=Math.max(0,(v.currentTime||0)+(\(js(delta))));if(isFinite(v.duration))next=Math.min(v.duration,next);v.currentTime=next})()")
+    case CarRemoteCommand.seekFraction:
+      let fraction = min(1, max(0, number(info, "fraction")))
+      evaluateCar("(function(){var v=document.querySelector('video');if(!v||!isFinite(v.duration))return;v.currentTime=v.duration*\(js(fraction))})()")
+    case CarRemoteCommand.fit:
+      let fit = switch info["fit"] as? String {
+      case "Fill": "cover"
+      case "Stretch": "fill"
+      default: "contain"
+      }
+      evaluateCar("(function(){var v=document.querySelector('video');if(v)v.style.objectFit='\(fit)'})()")
+    case CarRemoteCommand.volume:
+      evaluateCar("(function(){var v=document.querySelector('video');if(v)v.volume=\(js(number(info, "volume")))})()")
+    case CarRemoteCommand.dim:
+      let on = flag(info, "on")
+      carDim.alpha = on ? 0.55 : 0
+      if on { view.bringSubviewToFront(carDim) }
+    case CarRemoteCommand.stop:
+      evaluateCar("document.querySelectorAll('video').forEach(function(v){v.pause()})")
+      loggedCarPlaying = false
+      NotificationCenter.default.post(
+        name: .cafariLiteCarPlayback, object: nil, userInfo: ["playing": false, "origin": "web"])
+    default:
+      break
+    }
+  }
+
+  private func number(_ info: [AnyHashable: Any], _ key: String) -> Double {
+    (info[key] as? NSNumber)?.doubleValue ?? 0
+  }
+
+  private func flag(_ info: [AnyHashable: Any], _ key: String) -> Bool {
+    (info[key] as? NSNumber)?.boolValue ?? false
+  }
+
+  private func js(_ value: Double) -> String {
+    value.formatted(
+      .number
+        .grouping(.never)
+        .precision(.fractionLength(0...4))
+        .locale(Locale(identifier: "en_US_POSIX"))
+    )
+  }
+
+  private func evaluateCar(_ script: String) {
+    guard let webView else {
+      Log.write("car js no web view")
+      return
+    }
+    Task {
+      do {
+        _ = try await webView.evaluateJavaScript(script)
+      } catch {
+        Log.write("car js error \(error.localizedDescription)")
+      }
+    }
+  }
+
+  private static let playbackHook = """
+  (function() {
+    if (window.__cafariPlayback) return;
+    window.__cafariPlayback = true;
+    var last = 0;
+    function report(v, force) {
+      if (!v || v.tagName !== 'VIDEO') return;
+      var now = Date.now();
+      var playing = !v.paused && !v.ended;
+      if (!force && now - last < 500) return;
+      last = now;
+      var dur = v.duration;
+      try {
+        window.webkit.messageHandlers.cafariPlayback.postMessage({
+          playing: playing,
+          ended: !!v.ended,
+          current: v.currentTime || 0,
+          duration: (isFinite(dur) ? dur : 0),
+          title: document.title || '',
+          url: location.href
+        });
+      } catch (e) {}
+    }
+    function hook(v) {
+      if (!v || v.tagName !== 'VIDEO' || v.__cafariHooked) return;
+      v.__cafariHooked = true;
+      ['play', 'pause', 'ended', 'seeked'].forEach(function(name) {
+        v.addEventListener(name, function() { report(v, true); });
+      });
+      v.addEventListener('timeupdate', function() { report(v, false); });
+    }
+    function scan() { document.querySelectorAll('video').forEach(hook); }
+    var root = document.documentElement || document;
+    new MutationObserver(scan).observe(root, { childList: true, subtree: true });
+    document.addEventListener('play', function(e) { hook(e.target); report(e.target, true); }, true);
+    scan();
+  })();
+  """
+}
+
+private final class CarPlaybackRelay: NSObject, WKScriptMessageHandler {
+  weak var owner: BrowserViewController?
+  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+    owner?.receiveCarPlayback(message)
   }
 }

@@ -18,17 +18,25 @@ final class CarPlaySceneDelegate: UIResponder, UIWindowSceneDelegate {
     options connectionOptions: UIScene.ConnectionOptions
   ) {
     Log.write("car scene willConnect role=\(session.role.rawValue)")
-    guard let windowScene = scene as? UIWindowScene else { return }
+    guard let windowScene = scene as? UIWindowScene else {
+      Log.write("car scene is NOT a UIWindowScene: \(type(of: scene))")
+      return
+    }
     let window = UIWindow(windowScene: windowScene)
-    // The car screen is the one being watched, so it gets no status line and
-    // no chrome it does not need.
-    window.rootViewController = BrowserViewController(showsStatus: false)
+    // CarPlay opens on the saved favorites grid. Selecting a favorite pushes
+    // the existing full-screen browser onto this navigation stack.
+    let home = CarPlayHomeViewController()
+    let navigation = UINavigationController(rootViewController: home)
+    navigation.setNavigationBarHidden(true, animated: false)
+    window.rootViewController = navigation
     window.makeKeyAndVisible()
     self.window = window
+    Log.write("car scene connected \(window.bounds.size)")
     NotificationCenter.default.post(name: .cafariLiteCarConnected, object: nil)
   }
 
   func sceneDidDisconnect(_ scene: UIScene) {
+    Log.write("car scene disconnected")
     window = nil
     NotificationCenter.default.post(name: .cafariLiteCarDisconnected, object: nil)
   }

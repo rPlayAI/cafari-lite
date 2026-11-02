@@ -2,8 +2,6 @@
 // screen, and nothing else. The full app, which also casts to Chromecast and
 // AirPlay receivers, and its sideload builds, are at
 // https://github.com/rPlayAI/cafari-public
-//
-// MIT licensed. See README.md for what the car screen needs to work.
 
 import UIKit
 
@@ -14,13 +12,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     configurationForConnecting session: UISceneSession,
     options: UIScene.ConnectionOptions
   ) -> UISceneConfiguration {
-    // Two scenes: the phone's own window, and the car's. The car one arrives
-    // only when the build is signed with the CarPlay video entitlement --
-    // without it iOS never offers this role and the app is phone-only.
-    Log.write("configuring scene role=\(session.role.rawValue)")
-    if session.role == cafariLiteCarPlayRole {
-      return UISceneConfiguration(name: "CarPlay", sessionRole: session.role)
+    Log.write("connecting scene role=\(session.role.rawValue)")
+    // Info.plist already binds each role to its delegate class, but returning a
+    // named configuration here guarantees it even if iOS ignores the manifest
+    // entry on a subsequent launch.
+    let name = if session.role == cafariLiteCarPlayRole {
+      "CarPlay"
+    } else {
+      "Phone"
     }
-    return UISceneConfiguration(name: "Phone", sessionRole: session.role)
+    return UISceneConfiguration(name: name, sessionRole: session.role)
   }
 }
