@@ -47,6 +47,26 @@ enum Settings {
     }
     set { defaults.set(newValue, forKey: "playOnlyWhenParked") }
   }
+
+  static var appearanceIndex: Int {
+    get { defaults.object(forKey: "appearanceIndex") as? Int ?? 0 }
+    set { defaults.set(newValue, forKey: "appearanceIndex") }
+  }
+
+  static var ambientLightSync: Bool {
+    get { defaults.object(forKey: "ambientLightSync") as? Bool ?? true }
+    set { defaults.set(newValue, forKey: "ambientLightSync") }
+  }
+
+  static var autoPlayYouTubeQueue: Bool {
+    get { defaults.object(forKey: "autoPlayYouTubeQueue") as? Bool ?? true }
+    set { defaults.set(newValue, forKey: "autoPlayYouTubeQueue") }
+  }
+
+  static var wallpaperShortcuts: Bool {
+    get { defaults.object(forKey: "wallpaperShortcuts") as? Bool ?? true }
+    set { defaults.set(newValue, forKey: "wallpaperShortcuts") }
+  }
 }
 
 extension Notification.Name {
